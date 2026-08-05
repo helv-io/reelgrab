@@ -62,6 +62,7 @@ def _download_cfg(cfg: AppConfig) -> DownloadConfig:
         cookies_file=str(cfg.cookies_file_path),
         format=d.format,
         merge_output_format=d.merge_output_format,
+        convert=d.convert,
     )
 
 

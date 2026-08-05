@@ -87,7 +87,7 @@ bot:
     # Relative paths are resolved against the data directory.
     state_file: runtime_state.yaml
 
-# Download (in-process yt-dlp; ffmpeg is used for probe + thumbnail).
+# Download (in-process yt-dlp; ffmpeg for convert / probe / thumbnail).
 download:
     # Temp download directory (relative to data dir unless absolute).
     work_dir: downloads
@@ -96,8 +96,29 @@ download:
     cookies_file: cookies.txt
     # yt-dlp format selector (video+audio merged when needed).
     format: bv*+ba/b
-    # Remux container after download.
+    # Remux container after yt-dlp merge (before convert step).
     merge_output_format: mp4
+    # Re-encode for bridges (WhatsApp etc.): H.264 + AAC in MP4, yuv420p.
+    # Defaults match common mobile/WhatsApp constraints; override as needed.
+    convert:
+        enabled: true
+        # true = always re-encode; false = skip when already H.264/AAC/yuv420p MP4
+        force: true
+        video_codec: libx264
+        audio_codec: aac
+        audio_bitrate: 128k
+        video_preset: veryfast
+        video_crf: 23
+        pixel_format: yuv420p
+        profile: baseline
+        level: "3.1"
+        # Scale down if larger (0 = no limit). Aspect ratio kept; even dims.
+        max_width: 1280
+        max_height: 1280
+        movflags: "+faststart"
+        # Extra ffmpeg args before the output path, e.g. ["-bf", "0"]
+        extra_args: []
+        timeout_seconds: 600
 
 # URL detection (Instagram short-form by default; extend patterns for other sites).
 instagram:

@@ -165,7 +165,29 @@ Export Netscape `cookies.txt` into `data/cookies.txt` when sites require a sessi
 
 ## Download
 
-Downloads run **in-process** with **yt-dlp** (and **ffmpeg** for remux/probe/thumbnail). No MeTube or other download container is required. Put Instagram cookies in `data/cookies.txt` when needed.
+Downloads run **in-process** with **yt-dlp**. After download, **ffmpeg** re-encodes to a bridge-friendly **H.264 + AAC MP4** (WhatsApp / mobile safe defaults). Override under `download.convert` in `config.yaml`.
+
+```yaml
+download:
+  convert:
+    enabled: true
+    force: true          # false = skip when already H.264/AAC/yuv420p MP4
+    video_codec: libx264
+    audio_codec: aac
+    audio_bitrate: 128k
+    video_preset: veryfast
+    video_crf: 23
+    pixel_format: yuv420p
+    profile: baseline
+    level: "3.1"
+    max_width: 1280
+    max_height: 1280
+    movflags: "+faststart"
+    extra_args: []       # e.g. ["-bf", "0"]
+    timeout_seconds: 600
+```
+
+No external download container is required. Put Instagram cookies in `data/cookies.txt` when needed.
 
 ## Tests
 

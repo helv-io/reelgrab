@@ -262,6 +262,15 @@ async def handle_command(
             ("domain", cfg.homeserver.domain),
             ("appservice.id", cfg.appservice.id),
             ("downloader", "yt-dlp"),
+            (
+                "convert",
+                (
+                    f"on force={cfg.download.convert.force} "
+                    f"{cfg.download.convert.video_codec}+{cfg.download.convert.audio_codec}"
+                    if cfg.download.convert.enabled
+                    else "off"
+                ),
+            ),
             ("auto_download", str(effective_auto(cfg, store))),
             ("notify_on_failure", str(effective_notify(cfg, store))),
             ("caption", repr(effective_caption(cfg, store))),

@@ -62,11 +62,38 @@ class BotConfig:
 
 
 @dataclass
+class ConvertConfig:
+    """ffmpeg re-encode for bridge/WhatsApp-friendly H.264+AAC MP4."""
+
+    enabled: bool = True
+    # If false, skip re-encode when source is already H.264/AAC/yuv420p in MP4.
+    force: bool = True
+    video_codec: str = "libx264"
+    audio_codec: str = "aac"
+    audio_bitrate: str = "128k"
+    # libx264 preset / CRF (lower CRF = higher quality / larger file)
+    video_preset: str = "veryfast"
+    video_crf: int = 23
+    pixel_format: str = "yuv420p"
+    # H.264 profile/level for broad mobile playback (WhatsApp, etc.)
+    profile: str = "baseline"
+    level: str = "3.1"
+    # Downscale long edge if larger (0 = no limit). Even dimensions enforced.
+    max_width: int = 1280
+    max_height: int = 1280
+    movflags: str = "+faststart"
+    # Extra ffmpeg args inserted before the output path (list of strings).
+    extra_args: list[str] = field(default_factory=list)
+    timeout_seconds: int = 600
+
+
+@dataclass
 class DownloadConfig:
     work_dir: str = "downloads"
     cookies_file: str = "cookies.txt"
     format: str = "bv*+ba/b"
     merge_output_format: str = "mp4"
+    convert: ConvertConfig = field(default_factory=ConvertConfig)
 
 
 @dataclass
@@ -184,6 +211,10 @@ def _merge_dataclass(dc_cls: type, data: dict[str, Any] | None) -> Any:
         kwargs[k] = v
     if dc_cls is AppserviceConfig and "bot" in kwargs and isinstance(kwargs["bot"], dict):
         kwargs["bot"] = _merge_dataclass(AppserviceBotConfig, kwargs["bot"])
+    if dc_cls is DownloadConfig and "convert" in kwargs and isinstance(
+        kwargs["convert"], dict
+    ):
+        kwargs["convert"] = _merge_dataclass(ConvertConfig, kwargs["convert"])
     return dc_cls(**kwargs)
 
 
