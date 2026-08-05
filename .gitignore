@@ -1,0 +1,36 @@
+# Secrets & generated runtime (data dir)
+data/*
+!data/.gitkeep
+
+config.yaml
+registration.yaml
+.env
+.env.*
+*.cookies
+cookies.txt
+cookies.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Temp media
+*.mp4
+*.webm
+*.mkv
+*.tmp
