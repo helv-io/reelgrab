@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import traceback
 from pathlib import Path
 
 from reelgrab.commands import (
@@ -241,15 +242,9 @@ async def _process_one(
     thumb_path: Path | None = None
     dl_cfg = _download_cfg(cfg)
     started = time.monotonic()
-    # Acknowledge before download so the room is not silent (and bridges wait).
-    try:
-        await bot.send_text(
-            room_id,
-            f"Downloading…\n{url}",
-            reply_to_event_id=event_id if cfg.bot.reply_to_original else None,
-        )
-    except Exception:
-        log.debug("could not send download notice", exc_info=True)
+    # Quiet by default: only the m.video (or an error notice) hits the room.
+    # No "Downloading…" / success chatter — useful when the goal is Matrix
+    # playback, not re-relay to the original chat platform.
 
     try:
         media = await download_url(url, dl_cfg)
@@ -274,7 +269,8 @@ async def _process_one(
 
         mxc = await bot.upload_media(media.path, mime=media.mime)
         reply_to = event_id if cfg.bot.reply_to_original else None
-        caption = effective_caption(cfg, store) or media.path.name
+        # Empty caption → filename as m.video body (Matrix requires a body).
+        caption = (effective_caption(cfg, store) or "").strip() or media.path.name
         await bot.send_video(
             room_id,
             mxc,
@@ -302,9 +298,14 @@ async def _process_one(
         log.exception("failed for %s: %s", url, exc)
         if effective_notify(cfg, store):
             try:
+                stack = traceback.format_exc()
+                body = f"Failed to grab media:\n{exc}\n\n{stack}".strip()
+                # Keep notices readable in clients / bridges.
+                if len(body) > 3500:
+                    body = body[:3490] + "\n…"
                 await bot.send_text(
                     room_id,
-                    f"Failed to grab media: {exc}",
+                    body,
                     reply_to_event_id=event_id if cfg.bot.reply_to_original else None,
                 )
             except Exception:

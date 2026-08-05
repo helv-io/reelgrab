@@ -75,9 +75,10 @@ bot:
     allowed_rooms: []
     # Reply to the triggering message when posting the video or an error.
     reply_to_original: true
-    # Caption on successful m.video. Empty string = use filename.
-    success_caption: Grabbed with reelgrab
-    # Send an m.notice when download/upload fails.
+    # Optional body text on successful m.video. Empty = filename only
+    # (Matrix requires a body; no "Downloading…" / success notices are sent).
+    success_caption: ""
+    # Send an m.notice with the exception traceback when download/upload fails.
     notify_on_failure: true
     # Max concurrent downloads.
     max_concurrent: 2

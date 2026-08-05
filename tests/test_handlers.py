@@ -158,8 +158,10 @@ class TestHandlers(unittest.TestCase):
             asyncio.run(_run())
             self.assertEqual(len(bot.sent_video), 1)
             self.assertEqual(bot.sent_video[0][1], "mxc://example.com/abc")
-            # progress notice then video
-            self.assertTrue(any("Downloading" in t[1] for t in bot.sent_text))
+            # Quiet success path: video only, no progress / caption notices.
+            self.assertEqual(bot.sent_text, [])
+            caption = bot.sent_video[0][3].get("caption")
+            self.assertEqual(caption, "vid.mp4")
 
     def test_handle_message_ignores_self(self) -> None:
         cfg = _cfg()

@@ -161,9 +161,11 @@ No extra homeserver config is required beyond a working appservice registration:
 | `allow <room_id>` / `allow clear` | allow-list |
 | `deny <room_id>` | remove from allow-list |
 | `auto on\|off` | auto-download |
-| `notify on\|off` | failure notices |
-| `caption <text>` | success caption |
+| `notify on\|off` | failure notices (traceback) |
+| `caption <text>` | optional m.video body (empty = filename) |
 | `!grab <url>` | force one download |
+
+On success the bot posts **only** the `m.video` (no “Downloading…” / “Grabbed…” notices). On failure it posts an `m.notice` with the error traceback when `notify_on_failure` is on. Preventing mautrix bridges from relaying that video back to the remote chat is a **bridge** setting (relay mode / filters), not something a third-party appservice can reliably force.
 
 ## Config reference
 

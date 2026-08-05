@@ -53,7 +53,8 @@ class BotConfig:
     command_prefix: str = "!grab"
     allowed_rooms: list[str] = field(default_factory=list)
     reply_to_original: bool = True
-    success_caption: str = "Grabbed with reelgrab"
+    # Empty = use filename only as m.video body (no extra success chatter).
+    success_caption: str = ""
     notify_on_failure: bool = True
     max_concurrent: int = 2
     dedupe_ttl_seconds: int = 3600
