@@ -10,14 +10,14 @@
 #   $EDITOR data/config.yaml
 #     homeserver.address:  http://synapse:8008   # internal CS API
 #     homeserver.domain:   example.com           # server_name
+#     appservice.address:  http://reelgrab:29399 # HS must reach the bot
 #     bot.admin_users:     ["@you:example.com"]
 #   docker compose run --rm reelgrab             # tokens + registration.yaml
-#   # Install data/registration.yaml on the homeserver, restart HS
+#   # Install data/registration.yaml on the homeserver (readable by HS process),
+#   # restart HS, then:
 #   docker compose up -d
 #
-# This host (helv): attach to network "web" (see networks below) or use
-#   network_mode: "web"
-# and homeserver.address: http://synapse:8008
+# Registration url must match appservice.address (homeserver pushes transactions).
 
 services:
   reelgrab:
@@ -32,23 +32,23 @@ services:
       # config.yaml, registration.yaml, cookies, downloads, runtime_state
       - ./data:/data
       # Uncomment if download.backend: metube
-      # - /docker/metube:/downloads:ro
+      # - /path/to/metube/downloads:/downloads:ro
     environment:
-      TZ: America/New_York
+      TZ: UTC
       REELGRAB_DATA: /data
       REELGRAB_DOCKER: "1"
+    # Appservice HTTP is reached by the HS at appservice.address (e.g. http://reelgrab:29399).
+    # Publish only if the homeserver is not on the same Docker network:
+    # ports:
+    #   - "29399:29399"
     # --- pick ONE network style ---
     # A) Same Docker network as Synapse (preferred). Name must match your stack.
     networks:
       - matrix
-    # B) This host uses network_mode: web for Matrix services — alternative:
-    # network_mode: web
-    # (comment out networks: above if you use network_mode)
+    # B) network_mode: web  (comment out networks: above if you use this)
 
 networks:
   matrix:
-    # Join an existing compose network (set the real name), e.g.:
-    #   docker network ls | grep -E 'matrix|web'
     # external: true
     # name: web
     external: false

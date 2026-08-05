@@ -9,7 +9,7 @@ Configuration follows the **mautrix / mau.dev** pattern:
 | `config.yaml` | data dir | Fully documented settings (auto-created) |
 | `registration.yaml` | data dir | Homeserver appservice registration (auto-created) |
 
-Defaults use **placeholders** (`example.com`, `localhost`). Nothing is hard-coded to a particular deployment.
+Defaults use placeholders (`example.com`, `localhost`).
 
 ## Docker Hub image
 
@@ -108,9 +108,11 @@ python -m reelgrab --generate-registration
 
 ## Homeserver registration
 
+Same model as **mautrix** bridges: the homeserver **pushes** events to the bot.
+
 ```yaml
 id: reelgrab
-url: null
+url: http://reelgrab:29399   # appservice.address — HS must reach this
 as_token: <secret>
 hs_token: <secret>
 sender_localpart: reelgrab
@@ -121,8 +123,12 @@ namespaces:
       exclusive: true
 ```
 
-- `url` is empty: the bot uses **Client-Server `/sync`** with `as_token`.
+- `url` = `appservice.address` (e.g. `http://reelgrab:29399` on a shared Docker network).
+- Synapse calls `PUT /_matrix/app/v1/transactions/{txnId}` with `Authorization: Bearer <hs_token>`.
+- Outbound (send / upload / join) uses Client-Server API with `as_token`.
+- AS users cannot use Client-Server `/sync` on modern Synapse; set a real `url`.
 - Bot MXID: `@<appservice.bot.username>:<homeserver.domain>`
+- After changing `registration.yaml`, restart the homeserver.
 
 ## Using the bot
 
@@ -175,7 +181,8 @@ reelgrab/
   __main__.py          # CLI
   config.py            # load / generate config + registration
   default_config.py    # documented default config.yaml
-  matrix_client.py     # as_token + sync + media
+  appservice.py        # HS → bot transaction HTTP (mautrix-style)
+  matrix_client.py     # as_token outbound CS API + event dispatch
   handlers.py          # pipeline
   commands.py          # DM admin commands
   downloader.py        # yt-dlp / MeTube (strategy)

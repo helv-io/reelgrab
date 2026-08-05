@@ -42,7 +42,7 @@ class AppserviceConfig:
     rate_limited: bool = False
     hostname: str = "0.0.0.0"
     port: int = 29399
-    address: str = "http://localhost:29399"
+    address: str = "http://reelgrab:29399"
 
 
 @dataclass
@@ -256,13 +256,15 @@ def save_tokens_in_config_file(config_path: Path, as_token: str, hs_token: str) 
 
 
 def build_registration(cfg: AppConfig) -> dict[str, Any]:
+    """Build homeserver appservice registration; ``url`` is ``appservice.address``."""
     domain = cfg.homeserver.domain
     username = cfg.appservice.bot.username
     domain_re = re.escape(domain)
     user_re = re.escape(username)
+    as_url = (cfg.appservice.address or "").strip() or None
     return {
         "id": cfg.appservice.id,
-        "url": None,
+        "url": as_url,
         "as_token": cfg.appservice.as_token,
         "hs_token": cfg.appservice.hs_token,
         "sender_localpart": username,
@@ -387,15 +389,42 @@ def bootstrap(
         messages.append(f"Generated appservice tokens in {config_path}")
 
     need_reg = generate_registration or not reg_path.is_file()
+    if not need_reg and reg_path.is_file():
+        try:
+            existing = load_yaml_file(reg_path)
+            desired = build_registration(cfg)
+            keys = ("url", "as_token", "hs_token", "sender_localpart", "id")
+            if any(existing.get(k) != desired.get(k) for k in keys):
+                need_reg = True
+                messages.append(
+                    "registration.yaml out of date vs config — regenerating"
+                )
+            else:
+                want_re = desired["namespaces"]["users"][0]["regex"]
+                got_re = (
+                    (existing.get("namespaces") or {})
+                    .get("users", [{}])[0]
+                    .get("regex")
+                )
+                if got_re != want_re:
+                    need_reg = True
+                    messages.append(
+                        "registration.yaml namespace mismatch — regenerating"
+                    )
+        except Exception as exc:
+            need_reg = True
+            messages.append(f"Could not read registration.yaml ({exc}); rewriting")
+
     if need_reg:
         write_registration(reg_path, cfg)
         created_registration = True
         messages.append(f"Wrote {reg_path}")
         messages.append(
-            "Register it on your homeserver, then restart the homeserver:\n"
+            "Install registration on your homeserver, then restart the homeserver:\n"
             "  app_service_config_files:\n"
             f"    - {reg_path}\n"
-            "(Path must be what the homeserver container/process can read.)"
+            f"  url (homeserver → bot): {cfg.appservice.address}\n"
+            "(Path must be readable by the homeserver process.)"
         )
 
     problems = [p for p in config_looks_unedited(cfg) if "tokens" not in p]

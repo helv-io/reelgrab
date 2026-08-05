@@ -49,15 +49,12 @@ appservice:
     # Bridges usually set this false.
     rate_limited: false
 
-    # Optional listen address for a future appservice HTTP endpoint.
-    # Currently the bot uses Client-Server /sync with as_token (registration
-    # url is left empty). These fields are still written for mau-style layout
-    # and forward compatibility.
+    # Bind address for the appservice HTTP server.
     hostname: 0.0.0.0
     port: 29399
-    # Address the homeserver would use to reach this appservice if url push
-    # were enabled (e.g. http://reelgrab:29399).
-    address: http://localhost:29399
+    # URL the homeserver uses to reach this process (registration ``url``).
+    # Example on a shared Docker network: http://reelgrab:29399
+    address: http://reelgrab:29399
 
 # Bot behaviour.
 bot:

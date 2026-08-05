@@ -278,10 +278,13 @@ def cleanup_path(path: Path) -> None:
 
 
 async def run_bot(cfg: AppConfig) -> None:
+    from reelgrab.appservice import AppserviceServer
+
     bot = MatrixBot(cfg)
     store = StateStore(cfg.state_file_path)
     dedupe = DedupeCache(cfg.bot.dedupe_ttl_seconds)
     sem = asyncio.Semaphore(max(1, cfg.bot.max_concurrent))
+    appservice = AppserviceServer(cfg)
 
     async def _on_message(
         *,
@@ -305,18 +308,23 @@ async def run_bot(cfg: AppConfig) -> None:
         )
 
     bot.on_text_message(_on_message)
+    appservice.on_events(bot.handle_appservice_events)
 
     log.info(
-        "starting user=%s backend=%s auto=%s admins=%s data=%s",
+        "starting user=%s backend=%s auto=%s admins=%s data=%s as_url=%s",
         cfg.user_id,
         effective_backend(cfg, store),
         effective_auto(cfg, store),
         cfg.bot.admin_users or "(none)",
         cfg.data_dir,
+        cfg.appservice.address,
     )
 
     try:
         await bot.start()
-        await bot.sync_forever()
+        await appservice.start()
+        log.info("ready — listening for appservice transactions at %s", cfg.appservice.address)
+        await asyncio.Event().wait()
     finally:
+        await appservice.stop()
         await bot.close()

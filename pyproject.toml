@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelgrab"
-version = "0.2.0"
+version = "0.3.0"
 description = "Short-form video grabber for Matrix (appservice + yt-dlp)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "reelgrab contributors" }]
 dependencies = [
-  "matrix-nio>=0.25.0",
   "yt-dlp>=2024.1.0",
   "PyYAML>=6.0",
   "aiohttp>=3.9.0",

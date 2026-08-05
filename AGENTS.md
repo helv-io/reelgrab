@@ -1,70 +1,39 @@
 # AGENTS.md — reelgrab
 
-Read this file first when working in this repo. Handoff for agents continuing the project.
+Handoff for agents working in this repo.
 
-## Communication rules (user)
+## Goal
 
-1. **Always perform the best work you can.**
-2. **Reply to the user in ASD-EST100.**
-3. Prefer clear, complete engineering work over half-measures.
-
-## Project goal
-
-**reelgrab**: Matrix appservice bot that:
-
-1. Hooks into the user’s Synapse / Matrix homeserver.
-2. Watches for short-form / social video links (Instagram-first; yt-dlp multi-site capable).
-3. Especially useful for WhatsApp → mautrix-whatsapp portal rooms.
-4. Downloads via yt-dlp (or MeTube) and posts `m.video` back into the room.
-
-User wants media in Matrix without opening Instagram.
-
-**No production deploy until user says go.**
+Matrix **appservice** bot that watches for short-form / social video links (Instagram and other yt-dlp sites), downloads them, and posts `m.video` into the room. Useful with mautrix-whatsapp portal rooms.
 
 ## Package
 
-- Python package: `reelgrab` (`python -m reelgrab`)
+- Python: `reelgrab` (`python -m reelgrab`)
 - Env: `REELGRAB_DATA`, `REELGRAB_DOCKER`
-- Appservice id / bot localpart default: `reelgrab`
-- Data dir mautrix-style: `config.yaml` + `registration.yaml` auto-created
+- Default appservice id / bot localpart: `reelgrab`
+- Data dir (mautrix-style): `config.yaml` + `registration.yaml` auto-created
 
-## This host (helv.io) — when deploying
+## Architecture (do not regress)
 
-| Item | Value |
-|------|--------|
-| HS internal | `http://synapse:8008` |
-| Domain | `helv.io` |
-| Bots mount | `/docker/synapse/bots` → install `reelgrab.yaml` |
-| Network | matrix stack / `web` |
-| Admin | `@helvio:helv.io` (confirm) |
-| MeTube | `http://metube:8081` |
-| Synapse max upload | 1G |
+- Homeserver **pushes** events to registration `url` (`appservice.address`).
+- Outbound CS API uses `as_token`.
+- Modern Synapse rejects AS-user `/sync` — never set registration `url: null` and poll `/sync`.
 
 ## Layout
 
 ```
-reelgrab/                 # application package
+reelgrab/          # application package
 tests/
 Dockerfile
-compose.yaml              # ./data:/data
-data/                     # gitignored runtime
+compose.yaml       # ./data:/data
+data/              # gitignored runtime
 AGENTS.md
 README.md
 ```
 
-## Session status
+## Local checks
 
-- [x] Design + implementation
-- [x] Appservice + DM commands
-- [x] mautrix-style config/registration
-- [x] Rename to **reelgrab**
-- [ ] Deploy on this host
-- [ ] Cookies if needed
-- [ ] Live WA IG link test
-
-## First actions for next agent
-
-1. Project lives at `/root/reelgrab` (rename from `instamatrix` is done).
-2. `docker compose run --rm reelgrab` → edit config for host → registration → Synapse.
-3. DM `@reelgrab:helv.io` → `status`.
-4. Keep replies in **ASD-EST100**.
+```bash
+python -m unittest discover -s tests -v
+# or: pytest tests/ -v
+```
