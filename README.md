@@ -23,21 +23,6 @@ docker.io/helvio/reelgrab
 docker pull helvio/reelgrab:latest
 ```
 
-### CI secrets / variables
-
-Configure under the repo **Settings → Secrets and variables → Actions**:
-
-| Name | Type | Purpose |
-|------|------|---------|
-| `DOCKERHUB_USERNAME` | **Variable** (or Secret) | Docker Hub username (`helvio`) |
-| `DOCKERHUB_TOKEN` | **Secret** | Docker Hub [access token](https://hub.docker.com/settings/security) |
-
-Workflow: [`.github/workflows/docker.yml`](.github/workflows/docker.yml)
-
-- Push to `main` → build + push tags `latest`, `sha-…`
-- Tag `v1.2.3` → also push semver tags `1.2.3`, `1.2`, `1`
-- Pull requests → multi-arch build only (no push)
-
 ## Docker (recommended)
 
 ```bash
@@ -137,6 +122,8 @@ namespaces:
 3. Invite the bot to rooms that receive video links.
 4. Optional: `allow !roomid:example.com`.
 
+**Bridged rooms:** If you use the bot in rooms bridged from other networks (e.g. Instagram, WhatsApp, Discord via [mau.dev](https://docs.mau.fi/) bridges), **relaying must be active** for that room. Without relay mode, messages from the remote side are not visible to the appservice bot in the same way, so links will not be picked up. Enable relay on the bridge for those rooms the same way you would for other bots that need to see bridged traffic.
+
 ### Admin DM commands
 
 | Command | Effect |
@@ -151,7 +138,7 @@ namespaces:
 | `auto on\|off` | auto-download |
 | `notify on\|off` | failure notices |
 | `caption <text>` | success caption |
-| `!grab <url>` / `!ig <url>` | force one download |
+| `!grab <url>` | force one download |
 
 ## Config reference
 
