@@ -146,7 +146,7 @@ def already_bridge_compatible(path: Path, conv: ConvertConfig) -> bool:
 
 
 def build_convert_args(src: Path, dest: Path, conv: ConvertConfig) -> list[str]:
-    """Build ffmpeg argv for WhatsApp/bridge-friendly re-encode."""
+    """Build ffmpeg argv for mobile/bridge-friendly re-encode."""
     args: list[str] = [
         "ffmpeg",
         "-y",
@@ -191,7 +191,7 @@ def build_convert_args(src: Path, dest: Path, conv: ConvertConfig) -> list[str]:
     if conv.level:
         args += ["-level", str(conv.level).strip()]
 
-    # Audio: AAC mono/stereo, constant bitrate — WhatsApp-friendly
+    # Audio: AAC stereo, constant bitrate — widely accepted on mobile clients
     args += [
         "-c:a",
         (conv.audio_codec or "aac").strip(),
@@ -216,7 +216,7 @@ def build_convert_args(src: Path, dest: Path, conv: ConvertConfig) -> list[str]:
 
 def convert_for_bridges(path: Path, job_dir: Path, conv: ConvertConfig) -> Path:
     """
-    Re-encode ``path`` to a bridge-friendly MP4 (default: H.264 baseline + AAC).
+    Re-encode ``path`` to a mobile-friendly MP4 (default: H.264 baseline + AAC).
 
     Returns path to the converted file (or original if conversion disabled / skipped).
     """
@@ -225,11 +225,11 @@ def convert_for_bridges(path: Path, job_dir: Path, conv: ConvertConfig) -> Path:
         return path
 
     if not shutil.which("ffmpeg"):
-        log.warning("ffmpeg not found — cannot convert for bridges")
+        log.warning("ffmpeg not found — cannot convert media")
         return path
 
     if not conv.force and already_bridge_compatible(path, conv):
-        log.info("source already bridge-compatible — skip convert (%s)", path.name)
+        log.info("source already compatible — skip convert (%s)", path.name)
         return path
 
     dest = job_dir / f"{path.stem}_bridge.mp4"
@@ -389,8 +389,7 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
             log.info("using cookies from %s", cookies)
         else:
             log.warning(
-                "cookies file missing (%s); Instagram and some sites may fail or "
-                "return incomplete media",
+                "cookies file missing (%s); some sites may fail or return incomplete media",
                 cookies,
             )
 
@@ -413,7 +412,7 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
         if size < MIN_BYTES:
             raise DownloadError(f"downloaded file too small ({size} bytes): {path.name}")
 
-        # Bridge/WhatsApp-friendly re-encode (configurable).
+        # Mobile/bridge-friendly re-encode (configurable).
         conv = cfg.convert if isinstance(cfg.convert, ConvertConfig) else ConvertConfig()
         path = convert_for_bridges(path, job_dir, conv)
 

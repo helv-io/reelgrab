@@ -61,7 +61,7 @@ bot:
     # Automatically download when a matching URL appears in a watched room.
     auto_download: true
     # Command to force a download, e.g. "!grab https://..."
-    # Legacy alias "!ig ..." is also accepted.
+    # Alias "!ig ..." is also accepted.
     command_prefix: "!grab"
     # If non-empty, only these room IDs get auto-downloads / force commands.
     # Empty list = every room the bot has joined.
@@ -91,15 +91,15 @@ bot:
 download:
     # Temp download directory (relative to data dir unless absolute).
     work_dir: downloads
-    # Netscape cookies.txt for sites that need a session (often Instagram).
+    # Netscape cookies.txt for sites that need a logged-in session.
     # Relative to data dir.
     cookies_file: cookies.txt
     # yt-dlp format selector (video+audio merged when needed).
     format: bv*+ba/b
     # Remux container after yt-dlp merge (before convert step).
     merge_output_format: mp4
-    # Re-encode for bridges (WhatsApp etc.): H.264 + AAC in MP4, yuv420p.
-    # Defaults match common mobile/WhatsApp constraints; override as needed.
+    # Re-encode for federated/bridged clients: H.264 + AAC in MP4, yuv420p.
+    # Defaults favour broad mobile compatibility; override as needed.
     convert:
         enabled: true
         # true = always re-encode; false = skip when already H.264/AAC/yuv420p MP4
@@ -120,17 +120,31 @@ download:
         extra_args: []
         timeout_seconds: 600
 
-# URL detection (Instagram short-form by default; extend patterns for other sites).
-instagram:
+# Short-form URL detection (reels / shorts only — not long-form watch pages).
+urls:
     # Regex fragments matched against URLs found in message bodies.
-    # Name is historical; patterns can cover any host you want reelgrab to grab.
     url_patterns:
+        # Instagram Reels
         - instagram\\.com/reel/
         - instagram\\.com/reels/
-        - instagram\\.com/p/
-        - instagram\\.com/tv/
         - instagr\\.am/
         - l\\.instagram\\.com/
+        # YouTube Shorts
+        - youtube\\.com/shorts/
+        - youtube\\.com/short/
+        - m\\.youtube\\.com/shorts/
+        # Facebook Reels
+        - facebook\\.com/reel/
+        - facebook\\.com/reels/
+        - facebook\\.com/share/r/
+        - fb\\.watch/
+        - fb\\.com/reel/
+        - fb\\.com/reels/
+        # TikTok
+        - tiktok\\.com/.*/video/
+        - tiktok\\.com/t/
+        - vm\\.tiktok\\.com/
+        - vt\\.tiktok\\.com/
 
 # Logging.
 logging:

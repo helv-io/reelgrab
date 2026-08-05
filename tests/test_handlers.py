@@ -32,7 +32,7 @@ def _cfg(
             allowed_rooms=rooms or [],
             admin_users=admins or ["@admin:example.com"],
         ),
-        instagram=UrlPatternsConfig(),
+        urls=UrlPatternsConfig(),
     )
 
 

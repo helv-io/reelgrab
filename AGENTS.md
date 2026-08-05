@@ -4,7 +4,7 @@ Handoff for agents working in this repo.
 
 ## Goal
 
-Matrix **appservice** bot that watches for short-form / social video links (Instagram and other yt-dlp sites), downloads them, and posts `m.video` into the room. Useful with mautrix-whatsapp portal rooms.
+Matrix **appservice** bot that watches for short-form video links (reels / shorts), downloads them with yt-dlp, and posts `m.video` into the room.
 
 ## Package
 

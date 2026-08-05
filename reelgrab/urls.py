@@ -1,4 +1,4 @@
-"""Detect grab-able video URLs in message text."""
+"""Detect short-form video URLs in message text."""
 
 from __future__ import annotations
 
@@ -12,6 +12,31 @@ _URL_RE = re.compile(
 )
 
 _TRAIL_PUNCT = ".,;:!?)》」』】＞>"
+
+# Default patterns: short-form only (reels / shorts / short clips), not long-form.
+DEFAULT_URL_PATTERNS: list[str] = [
+    # Instagram Reels
+    r"instagram\.com/reel/",
+    r"instagram\.com/reels/",
+    r"instagr\.am/",
+    r"l\.instagram\.com/",
+    # YouTube Shorts (not full watch?v= videos)
+    r"youtube\.com/shorts/",
+    r"youtube\.com/short/",
+    r"m\.youtube\.com/shorts/",
+    # Facebook Reels / short clips
+    r"facebook\.com/reel/",
+    r"facebook\.com/reels/",
+    r"facebook\.com/share/r/",
+    r"fb\.watch/",
+    r"fb\.com/reel/",
+    r"fb\.com/reels/",
+    # TikTok (short-form by nature)
+    r"tiktok\.com/.*/video/",
+    r"tiktok\.com/t/",
+    r"vm\.tiktok\.com/",
+    r"vt\.tiktok\.com/",
+]
 
 
 def normalize_url(url: str) -> str:
@@ -39,29 +64,10 @@ def is_matching_url(url: str, patterns: list[str]) -> bool:
     """Return True if url matches any configured pattern."""
     if not url:
         return False
-    try:
-        parsed = urlparse(url)
-        host = (parsed.netloc or "").lower()
-    except Exception:
-        return False
-
     for pattern in patterns:
         if re.search(pattern, url, re.IGNORECASE):
             return True
-
-    # Instagram path heuristics when host is IG but pattern list is minimal
-    host_ok = "instagram.com" in host or host == "instagr.am" or host.endswith(
-        ".instagr.am"
-    )
-    if host_ok:
-        path = (parsed.path or "").lower()
-        if any(seg in path for seg in ("/reel/", "/p/", "/tv/", "/reels/")):
-            return True
     return False
-
-
-# Back-compat alias
-is_instagram_url = is_matching_url
 
 
 def canonicalize_url(url: str) -> str:
@@ -77,9 +83,6 @@ def canonicalize_url(url: str) -> str:
         return url
 
 
-canonicalize_instagram_url = canonicalize_url
-
-
 def find_matching_urls(text: str, patterns: list[str]) -> list[str]:
     """Return unique matching URLs in text, order preserved."""
     seen: set[str] = set()
@@ -92,6 +95,3 @@ def find_matching_urls(text: str, patterns: list[str]) -> list[str]:
             seen.add(key)
             out.append(url)
     return out
-
-
-find_instagram_urls = find_matching_urls

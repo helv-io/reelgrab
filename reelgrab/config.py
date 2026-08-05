@@ -63,7 +63,7 @@ class BotConfig:
 
 @dataclass
 class ConvertConfig:
-    """ffmpeg re-encode for bridge/WhatsApp-friendly H.264+AAC MP4."""
+    """ffmpeg re-encode to mobile/bridge-friendly H.264+AAC MP4."""
 
     enabled: bool = True
     # If false, skip re-encode when source is already H.264/AAC/yuv420p in MP4.
@@ -75,7 +75,7 @@ class ConvertConfig:
     video_preset: str = "veryfast"
     video_crf: int = 23
     pixel_format: str = "yuv420p"
-    # H.264 profile/level for broad mobile playback (WhatsApp, etc.)
+    # H.264 profile/level for broad mobile playback
     profile: str = "baseline"
     level: str = "3.1"
     # Downscale long edge if larger (0 = no limit). Even dimensions enforced.
@@ -98,22 +98,15 @@ class DownloadConfig:
 
 @dataclass
 class UrlPatternsConfig:
-    """URL match patterns (config key remains `instagram` for compatibility)."""
+    """Regex fragments for short-form video URLs in messages."""
 
-    url_patterns: list[str] = field(
-        default_factory=lambda: [
-            r"instagram\.com/reel/",
-            r"instagram\.com/reels/",
-            r"instagram\.com/p/",
-            r"instagram\.com/tv/",
-            r"instagr\.am/",
-            r"l\.instagram\.com/",
-        ]
-    )
+    url_patterns: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        if not self.url_patterns:
+            from reelgrab.urls import DEFAULT_URL_PATTERNS
 
-# Back-compat name used in YAML section
-InstagramConfig = UrlPatternsConfig
+            self.url_patterns = list(DEFAULT_URL_PATTERNS)
 
 
 @dataclass
@@ -129,7 +122,8 @@ class AppConfig:
     appservice: AppserviceConfig = field(default_factory=AppserviceConfig)
     bot: BotConfig = field(default_factory=BotConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
-    instagram: UrlPatternsConfig = field(default_factory=UrlPatternsConfig)
+    # YAML key: ``urls`` (legacy ``instagram`` accepted when loading).
+    urls: UrlPatternsConfig = field(default_factory=UrlPatternsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     data_dir: Path = field(default_factory=lambda: Path("data"))
@@ -137,6 +131,15 @@ class AppConfig:
     registration_path: Path = field(
         default_factory=lambda: Path("data/registration.yaml")
     )
+
+    @property
+    def instagram(self) -> UrlPatternsConfig:
+        """Back-compat alias for ``urls``."""
+        return self.urls
+
+    @instagram.setter
+    def instagram(self, value: UrlPatternsConfig) -> None:
+        self.urls = value
 
     @property
     def user_id(self) -> str:
@@ -152,7 +155,7 @@ class AppConfig:
 
     @property
     def url_patterns(self) -> list[str]:
-        return list(self.instagram.url_patterns)
+        return list(self.urls.url_patterns)
 
     def resolve_path(self, p: str | Path) -> Path:
         path = Path(p)
@@ -238,12 +241,14 @@ def write_default_config(path: Path) -> None:
 
 def parse_config_dict(raw: dict[str, Any]) -> AppConfig:
     appservice_raw = raw.get("appservice") or {}
+    # Prefer ``urls``; accept legacy ``instagram`` section name.
+    urls_raw = raw.get("urls") if raw.get("urls") is not None else raw.get("instagram")
     return AppConfig(
         homeserver=_merge_dataclass(HomeserverConfig, raw.get("homeserver")),
         appservice=_merge_dataclass(AppserviceConfig, appservice_raw),
         bot=_merge_dataclass(BotConfig, raw.get("bot")),
         download=_merge_dataclass(DownloadConfig, raw.get("download")),
-        instagram=_merge_dataclass(UrlPatternsConfig, raw.get("instagram")),
+        urls=_merge_dataclass(UrlPatternsConfig, urls_raw),
         logging=_merge_dataclass(LoggingConfig, raw.get("logging")),
     )
 

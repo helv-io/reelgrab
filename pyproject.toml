@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelgrab"
-version = "0.4.1"
-description = "Short-form video grabber for Matrix (appservice + yt-dlp)"
+version = "0.4.2"
+description = "Matrix appservice bot that grabs short-form social videos (reels/shorts)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

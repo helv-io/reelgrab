@@ -1,6 +1,6 @@
 # reelgrab
 
-Matrix **appservice bot** that grabs short-form / social videos from links (Instagram Reels and other yt-dlp sites) and posts the file back into the room.
+Matrix **appservice bot** that grabs **short-form** social videos (reels / shorts) from links and posts the file back into the room.
 
 Configuration follows the **mautrix / mau.dev** pattern:
 
@@ -155,17 +155,30 @@ namespaces:
 
 ## Config reference
 
-Every key is documented **in** `config.yaml`. Sections: `homeserver`, `appservice`, `bot`, `download`, `instagram` (URL patterns), `logging`.
+Every key is documented **in** `config.yaml`. Sections: `homeserver`, `appservice`, `bot`, `download`, `urls` (patterns), `logging`.
 
 Relative paths resolve against the **data directory**.
 
+## Supported links (defaults)
+
+Short-form only (not full long-form pages):
+
+| Site | Matched URL shapes |
+|------|--------------------|
+| Instagram | `/reel/`, `/reels/`, `instagr.am`, `l.instagram.com` |
+| YouTube | `/shorts/` only (not `watch?v=`) |
+| Facebook | `/reel/`, `/reels/`, `/share/r/`, `fb.watch` |
+| TikTok | `/@…/video/…`, `vm.tiktok.com`, `vt.tiktok.com`, `/t/` |
+
+Override or extend via `urls.url_patterns` in `config.yaml`.
+
 ## Cookies
 
-Export Netscape `cookies.txt` into `data/cookies.txt` when sites require a session (common for Instagram).
+Export Netscape `cookies.txt` into `data/cookies.txt` when a site requires a session.
 
 ## Download
 
-Downloads run **in-process** with **yt-dlp**. After download, **ffmpeg** re-encodes to a bridge-friendly **H.264 + AAC MP4** (WhatsApp / mobile safe defaults). Override under `download.convert` in `config.yaml`.
+Downloads run **in-process** with **yt-dlp**. After download, **ffmpeg** re-encodes to a mobile-friendly **H.264 + AAC MP4**. Override under `download.convert` in `config.yaml`.
 
 ```yaml
 download:
@@ -187,7 +200,7 @@ download:
     timeout_seconds: 600
 ```
 
-No external download container is required. Put Instagram cookies in `data/cookies.txt` when needed.
+No external download container is required.
 
 ## Tests
 
