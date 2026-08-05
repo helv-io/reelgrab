@@ -11,10 +11,38 @@ Configuration follows the **mautrix / mau.dev** pattern:
 
 Defaults use **placeholders** (`example.com`, `localhost`). Nothing is hard-coded to a particular deployment.
 
+## Docker Hub image
+
+Multi-arch images (`linux/amd64`, `linux/arm64`) are built by GitHub Actions and published to:
+
+```text
+docker.io/helvio/reelgrab
+```
+
+```bash
+docker pull helvio/reelgrab:latest
+```
+
+### CI secrets / variables
+
+Configure under the repo **Settings → Secrets and variables → Actions**:
+
+| Name | Type | Purpose |
+|------|------|---------|
+| `DOCKERHUB_USERNAME` | **Variable** (or Secret) | Docker Hub username (`helvio`) |
+| `DOCKERHUB_TOKEN` | **Secret** | Docker Hub [access token](https://hub.docker.com/settings/security) |
+
+Workflow: [`.github/workflows/docker.yml`](.github/workflows/docker.yml)
+
+- Push to `main` → build + push tags `latest`, `sha-…`
+- Tag `v1.2.3` → also push semver tags `1.2.3`, `1.2`, `1`
+- Pull requests → multi-arch build only (no push)
+
 ## Docker (recommended)
 
 ```bash
-git clone <this-repo> reelgrab && cd reelgrab
+git clone https://github.com/helv-io/reelgrab.git && cd reelgrab
+# or: docker pull helvio/reelgrab:latest
 mkdir -p data
 
 # 1) First run writes /data/config.yaml and exits

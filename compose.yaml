@@ -1,8 +1,8 @@
 # reelgrab — short-form video grabber for Matrix (appservice)
 #
-# Build once:
-#   docker build -t reelgrab:local .
-#   # or: docker compose build
+# Image options:
+#   image: helvio/reelgrab:latest   # Docker Hub (CI multi-arch)
+#   image: reelgrab:local && build: .   # local build
 #
 # First-time setup:
 #   mkdir -p data
@@ -22,8 +22,10 @@
 services:
   reelgrab:
     container_name: reelgrab
-    image: reelgrab:local
-    build: .
+    image: helvio/reelgrab:latest
+    # Local build instead of Hub:
+    # image: reelgrab:local
+    # build: .
     # Exit 0 after generating config must not restart-loop
     restart: on-failure
     volumes:
