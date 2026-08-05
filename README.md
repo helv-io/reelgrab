@@ -1,5 +1,9 @@
 # reelgrab
 
+<p align="center">
+  <img src="images/icon.jpg" alt="reelgrab icon" width="128" height="128">
+</p>
+
 Matrix **appservice bot** that grabs **short-form** social videos (reels / shorts) from links and posts the file back into the room.
 
 Configuration follows the **mautrix / mau.dev** pattern:
@@ -115,6 +119,27 @@ namespaces:
 - Bot MXID: `@<appservice.bot.username>:<homeserver.domain>`
 - After changing `registration.yaml`, restart the homeserver.
 
+## Bot avatar (profile picture)
+
+Matrix does **not** ship avatar bytes inside the profile event. The profile stores an **`mxc://` media URI**; other homeservers fetch that media from yours over federation.
+
+On startup, reelgrab (like the display name):
+
+1. Uploads the configured image to **your** homeserver media repo (`POST /_matrix/media/v3/upload`) with the appservice token.
+2. Sets the bot profile avatar to the returned `mxc://…` (`PUT /_matrix/client/v3/profile/…/avatar_url`).
+
+```yaml
+appservice:
+  bot:
+    displayname: Reelgrab
+    # default  = packaged icon (reelgrab/assets/icon.jpg)
+    # path     = custom file (relative to data dir, or absolute)
+    # ""       = leave avatar unchanged
+    avatar: default
+```
+
+No extra homeserver config is required beyond a working appservice registration: exclusive AS users can upload media and edit their own profile with `as_token`. After the first successful start, Element and other clients should show the icon (refresh/reopen the room if a client cached a blank avatar).
+
 ## Using the bot
 
 1. DM `@reelgrab:example.com`.
@@ -209,6 +234,8 @@ reelgrab/
   downloader.py        # yt-dlp download + ffmpeg probe/thumbnail
   urls.py
   state.py
+  assets/icon.jpg      # default bot avatar (also images/icon.jpg in repo)
+images/icon.jpg
 Dockerfile
 compose.yaml
 ```

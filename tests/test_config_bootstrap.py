@@ -102,6 +102,37 @@ class TestBootstrap(unittest.TestCase):
         self.assertEqual(reg["url"], "http://reelgrab:29399")
         self.assertIn("matrix\\.example", reg["namespaces"]["users"][0]["regex"])
 
+    def test_default_config_includes_avatar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.yaml"
+            write_default_config(path)
+            text = path.read_text()
+            self.assertIn("avatar: default", text)
+            self.assertIn("displayname: Reelgrab", text)
+
+    def test_avatar_path_default_resolves_to_packaged_icon(self) -> None:
+        cfg = parse_config_dict({})
+        path = cfg.avatar_path()
+        self.assertIsNotNone(path)
+        assert path is not None
+        self.assertTrue(path.is_file(), f"missing packaged icon: {path}")
+        self.assertEqual(path.name, "icon.jpg")
+
+    def test_avatar_path_empty_skips(self) -> None:
+        cfg = parse_config_dict({"appservice": {"bot": {"avatar": ""}}})
+        self.assertIsNone(cfg.avatar_path())
+
+    def test_avatar_path_custom_relative_to_data_dir(self) -> None:
+        cfg = parse_config_dict({"appservice": {"bot": {"avatar": "my-avatar.png"}}})
+        cfg.data_dir = Path("/tmp/reelgrab-data")
+        self.assertEqual(cfg.avatar_path(), Path("/tmp/reelgrab-data/my-avatar.png").resolve())
+
+    def test_avatar_path_absolute(self) -> None:
+        cfg = parse_config_dict(
+            {"appservice": {"bot": {"avatar": "/opt/icons/bot.png"}}}
+        )
+        self.assertEqual(cfg.avatar_path(), Path("/opt/icons/bot.png"))
+
 
 if __name__ == "__main__":
     unittest.main()

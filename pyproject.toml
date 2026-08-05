@@ -26,6 +26,9 @@ reelgrab = "reelgrab.__main__:main"
 [tool.setuptools.packages.find]
 include = ["reelgrab*"]
 
+[tool.setuptools.package-data]
+reelgrab = ["assets/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

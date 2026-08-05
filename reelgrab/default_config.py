@@ -38,6 +38,12 @@ appservice:
         username: reelgrab
         # Display name set on startup. Empty = leave unchanged after first set.
         displayname: Reelgrab
+        # Avatar set on startup. Matrix profile avatars are mxc:// URIs hosted
+        # by your homeserver (federated media). Values:
+        #   default  — packaged reelgrab icon (upload + set each start)
+        #   <path>   — image file (relative to data dir, or absolute)
+        #   empty    — leave avatar unchanged
+        avatar: default
 
     # AS <-> HS shared secrets. Leave as "generate" on first real start;
     # the bot will replace them with random values and write registration.yaml.

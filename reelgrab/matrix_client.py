@@ -181,19 +181,39 @@ class MatrixBot:
             log.warning("appservice register attempt failed: %s", exc)
 
     async def _ensure_profile(self) -> None:
+        uid = quote(self.user_id, safe="")
         name = (self.cfg.appservice.bot.displayname or "").strip()
-        if not name:
+        if name:
+            try:
+                await self._request(
+                    "PUT",
+                    f"/_matrix/client/v3/profile/{uid}/displayname",
+                    json={"displayname": name},
+                )
+                log.info("display name set to %r", name)
+            except Exception as exc:
+                log.debug("set_displayname failed (may be ok): %s", exc)
+        await self._ensure_avatar()
+
+    async def _ensure_avatar(self) -> None:
+        """Upload configured avatar and set profile avatar_url (mxc:// on this HS)."""
+        path = self.cfg.avatar_path()
+        if path is None:
+            return
+        if not path.is_file():
+            log.warning("avatar file missing (%s); skipping", path)
             return
         try:
+            mxc = await self.upload_media(path)
             uid = quote(self.user_id, safe="")
             await self._request(
                 "PUT",
-                f"/_matrix/client/v3/profile/{uid}/displayname",
-                json={"displayname": name},
+                f"/_matrix/client/v3/profile/{uid}/avatar_url",
+                json={"avatar_url": mxc},
             )
-            log.info("display name set to %r", name)
+            log.info("avatar set from %s -> %s", path, mxc)
         except Exception as exc:
-            log.debug("set_displayname failed (may be ok): %s", exc)
+            log.warning("set_avatar failed (may be ok): %s", exc)
 
     async def _refresh_joined_rooms(self) -> None:
         try:

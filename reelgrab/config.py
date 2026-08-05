@@ -31,6 +31,8 @@ class HomeserverConfig:
 class AppserviceBotConfig:
     username: str = "reelgrab"
     displayname: str = "Reelgrab"
+    # Path to avatar image, "default" for the packaged icon, or empty to skip.
+    avatar: str = "default"
 
 
 @dataclass
@@ -174,6 +176,15 @@ class AppConfig:
     @property
     def cookies_file_path(self) -> Path:
         return self.resolve_path(self.download.cookies_file)
+
+    def avatar_path(self) -> Path | None:
+        """Resolve appservice.bot.avatar to a local file, or None to skip."""
+        raw = (self.appservice.bot.avatar or "").strip()
+        if not raw:
+            return None
+        if raw.lower() in ("default", "builtin", "packaged"):
+            return Path(__file__).resolve().parent / "assets" / "icon.jpg"
+        return self.resolve_path(raw)
 
 
 def default_data_dir() -> Path:
