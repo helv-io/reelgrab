@@ -149,7 +149,6 @@ namespaces:
 | `allow <room_id>` / `allow clear` | allow-list |
 | `deny <room_id>` | remove from allow-list |
 | `auto on\|off` | auto-download |
-| `backend ytdlp\|metube` | download backend |
 | `notify on\|off` | failure notices |
 | `caption <text>` | success caption |
 | `!grab <url>` / `!ig <url>` | force one download |
@@ -164,9 +163,9 @@ Relative paths resolve against the **data directory**.
 
 Export Netscape `cookies.txt` into `data/cookies.txt` when sites require a session (common for Instagram).
 
-## MeTube backend
+## Download
 
-`download.backend: metube` + internal `download.metube_url`. Mount MeTube downloads at `download.metube_download_dir`.
+Downloads run **in-process** with **yt-dlp** (and **ffmpeg** for remux/probe/thumbnail). No MeTube or other download container is required. Put Instagram cookies in `data/cookies.txt` when needed.
 
 ## Tests
 
@@ -185,7 +184,7 @@ reelgrab/
   matrix_client.py     # as_token outbound CS API + event dispatch
   handlers.py          # pipeline
   commands.py          # DM admin commands
-  downloader.py        # yt-dlp / MeTube (strategy)
+  downloader.py        # yt-dlp download + ffmpeg probe/thumbnail
   urls.py
   state.py
 Dockerfile

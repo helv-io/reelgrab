@@ -76,11 +76,7 @@ def main(argv: list[str] | None = None) -> None:
         config.user_id,
         config.data_dir,
     )
-    log.info(
-        "registration=%s backend=%s",
-        config.registration_path,
-        config.download.backend,
-    )
+    log.info("registration=%s downloader=yt-dlp", config.registration_path)
 
     from reelgrab.handlers import run_bot
 

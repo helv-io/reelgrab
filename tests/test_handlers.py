@@ -119,15 +119,24 @@ class TestHandlers(unittest.TestCase):
         )
 
     def test_handle_message_auto_download_pipeline(self) -> None:
+        from reelgrab.downloader import MediaFile
+
         cfg = _cfg()
         bot = FakeBot()
         with tempfile.TemporaryDirectory() as td:
             store = StateStore(Path(td) / "s.yaml")
             fake_file = Path(td) / "vid.mp4"
-            fake_file.write_bytes(b"\x00\x00")
+            fake_file.write_bytes(b"\x00" * 20_000)
 
             async def _fake_dl(url, dl_cfg):
-                return fake_file
+                return MediaFile(
+                    path=fake_file,
+                    mime="video/mp4",
+                    size=fake_file.stat().st_size,
+                    duration_ms=2500,
+                    width=720,
+                    height=1280,
+                )
 
             async def _run() -> None:
                 with patch("reelgrab.handlers.download_url", side_effect=_fake_dl):
@@ -144,11 +153,13 @@ class TestHandlers(unittest.TestCase):
                         sem=asyncio.Semaphore(1),
                     )
                     # tasks are fire-and-forget
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.1)
 
             asyncio.run(_run())
             self.assertEqual(len(bot.sent_video), 1)
             self.assertEqual(bot.sent_video[0][1], "mxc://example.com/abc")
+            # progress notice then video
+            self.assertTrue(any("Downloading" in t[1] for t in bot.sent_text))
 
     def test_handle_message_ignores_self(self) -> None:
         cfg = _cfg()

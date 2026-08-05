@@ -40,6 +40,12 @@ class MatrixGateway(Protocol):
         reply_to_event_id: str | None = None,
         caption: str | None = None,
         mime: str | None = None,
+        size: int | None = None,
+        duration_ms: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        thumbnail_mxc: str | None = None,
+        thumbnail_path: Path | None = None,
     ) -> None: ...
 
     async def send_text(
@@ -386,29 +392,67 @@ class MatrixBot:
         reply_to_event_id: str | None = None,
         caption: str | None = None,
         mime: str | None = None,
+        size: int | None = None,
+        duration_ms: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        thumbnail_mxc: str | None = None,
+        thumbnail_path: Path | None = None,
     ) -> None:
         path = Path(path)
-        size = path.stat().st_size if path.is_file() else 0
+        if size is None:
+            size = path.stat().st_size if path.is_file() else 0
         if not mime:
             mime, _ = mimetypes.guess_type(str(path))
             mime = mime or "video/mp4"
 
         is_video = mime.startswith("video/")
         body = caption or path.name
+        info: dict[str, Any] = {"size": size, "mimetype": mime}
+        if duration_ms is not None and duration_ms > 0:
+            info["duration"] = int(duration_ms)
+        if width:
+            info["w"] = int(width)
+        if height:
+            info["h"] = int(height)
+        if thumbnail_mxc:
+            info["thumbnail_url"] = thumbnail_mxc
+            thumb_info: dict[str, Any] = {"mimetype": "image/jpeg"}
+            if thumbnail_path and thumbnail_path.is_file():
+                thumb_info["size"] = thumbnail_path.stat().st_size
+            if width:
+                # Approximate thumb dimensions (long edge ~640 from generator)
+                tw, th = int(width), int(height or width)
+                if max(tw, th) > 640:
+                    scale = 640 / max(tw, th)
+                    tw = max(1, int(tw * scale))
+                    th = max(1, int(th * scale))
+                thumb_info["w"] = tw
+                thumb_info["h"] = th
+            info["thumbnail_info"] = thumb_info
+
         content: dict[str, Any] = {
             "body": body,
-            "filename": path.name,
-            "info": {"size": size, "mimetype": mime},
+            "info": info,
             "msgtype": "m.video" if is_video else "m.file",
             "url": mxc,
         }
+        if not is_video:
+            content["filename"] = path.name
         if reply_to_event_id:
             content["m.relates_to"] = {
                 "m.in_reply_to": {"event_id": reply_to_event_id}
             }
 
         await self._room_send(room_id, content)
-        log.info("sent %s to %s", content["msgtype"], room_id)
+        log.info(
+            "sent %s to %s size=%s duration_ms=%s thumb=%s",
+            content["msgtype"],
+            room_id,
+            size,
+            duration_ms,
+            bool(thumbnail_mxc),
+        )
 
     async def send_text(
         self,

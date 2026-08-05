@@ -29,7 +29,6 @@ KNOWN_COMMANDS = frozenset(
         "allow",
         "deny",
         "auto",
-        "backend",
         "notify",
         "caption",
         "grab",
@@ -50,7 +49,6 @@ _HELP_ROWS: list[tuple[str, str]] = [
     ("deny <room_id>", "Remove room from allow-list"),
     ("allow clear", "Clear allow-list (all rooms)"),
     ("auto on|off", "Auto-download matching links"),
-    ("backend ytdlp|metube", "Download backend"),
     ("notify on|off", "Failure notices"),
     ("caption <text>", "Success caption (caption clear = default)"),
     ("grab <url>", "Download one URL now"),
@@ -105,12 +103,6 @@ def effective_notify(cfg: AppConfig, store: StateStore) -> bool:
     if store.state.notify_on_failure is not None:
         return store.state.notify_on_failure
     return cfg.bot.notify_on_failure
-
-
-def effective_backend(cfg: AppConfig, store: StateStore) -> str:
-    if store.state.backend:
-        return store.state.backend
-    return cfg.download.backend
 
 
 def effective_caption(cfg: AppConfig, store: StateStore) -> str:
@@ -188,7 +180,6 @@ def parse_command(body: str, cfg: AppConfig) -> tuple[str, list[str]] | None:
         "allow",
         "deny",
         "auto",
-        "backend",
         "notify",
         "caption",
         "grab",
@@ -218,7 +209,6 @@ async def handle_command(
         "allow",
         "deny",
         "auto",
-        "backend",
         "notify",
         "caption",
         "grab",
@@ -271,7 +261,7 @@ async def handle_command(
             ("homeserver", cfg.homeserver.address),
             ("domain", cfg.homeserver.domain),
             ("appservice.id", cfg.appservice.id),
-            ("backend", effective_backend(cfg, store)),
+            ("downloader", "yt-dlp"),
             ("auto_download", str(effective_auto(cfg, store))),
             ("notify_on_failure", str(effective_notify(cfg, store))),
             ("caption", repr(effective_caption(cfg, store))),
@@ -363,18 +353,6 @@ async def handle_command(
         on = args[0].lower() == "on"
         store.update(auto_download=on)
         await bot.send_text(room_id, f"auto_download = {on}", reply_to_event_id=reply)
-        return True
-
-    if cmd == "backend":
-        if not args or args[0].lower() not in ("ytdlp", "metube"):
-            await bot.send_text(
-                room_id, "Usage: backend ytdlp|metube", reply_to_event_id=reply
-            )
-            return True
-        store.update(backend=args[0].lower())
-        await bot.send_text(
-            room_id, f"backend = {args[0].lower()}", reply_to_event_id=reply
-        )
         return True
 
     if cmd == "notify":

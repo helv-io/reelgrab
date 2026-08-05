@@ -20,7 +20,6 @@ class RuntimeState:
     auto_download: bool | None = None
     allowed_rooms: list[str] | None = None
     notify_on_failure: bool | None = None
-    backend: str | None = None
     success_caption: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

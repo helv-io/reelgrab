@@ -10,7 +10,6 @@ from pathlib import Path
 from reelgrab.commands import (
     KNOWN_COMMANDS,
     effective_auto,
-    effective_backend,
     effective_caption,
     effective_notify,
     force_prefixes,
@@ -21,7 +20,7 @@ from reelgrab.commands import (
     room_allowed_effective,
 )
 from reelgrab.config import AppConfig, DownloadConfig
-from reelgrab.downloader import download_url, guess_mime
+from reelgrab.downloader import download_url
 from reelgrab.matrix_client import MatrixBot, MatrixGateway
 from reelgrab.state import StateStore
 from reelgrab.urls import canonicalize_url, find_matching_urls
@@ -56,19 +55,13 @@ class DedupeCache:
         self._seen[key] = time.monotonic() + self.ttl
 
 
-def _download_cfg(cfg: AppConfig, store: StateStore) -> DownloadConfig:
+def _download_cfg(cfg: AppConfig) -> DownloadConfig:
     d = cfg.download
-    backend = effective_backend(cfg, store)
     return DownloadConfig(
-        backend=backend,
         work_dir=str(cfg.work_dir_path),
         cookies_file=str(cfg.cookies_file_path),
         format=d.format,
         merge_output_format=d.merge_output_format,
-        metube_url=d.metube_url,
-        metube_poll_seconds=d.metube_poll_seconds,
-        metube_timeout_seconds=d.metube_timeout_seconds,
-        metube_download_dir=d.metube_download_dir,
     )
 
 
@@ -121,7 +114,6 @@ async def handle_message(
     low = text_strip.lower()
     prefixes = force_prefixes(cfg)
     first = low.split()[0] if low.split() else ""
-    # Strip leading bot mention aliases
     if first in ("reelgrab", "grabbot", "bot", "rg") and len(low.split()) > 1:
         first = low.split()[1]
     looks_like_cmd = (
@@ -244,25 +236,67 @@ async def _process_one(
     url: str,
     dedupe: DedupeCache | None,
 ) -> None:
-    path: Path | None = None
-    dl_cfg = _download_cfg(cfg, store)
+    media_path: Path | None = None
+    thumb_path: Path | None = None
+    dl_cfg = _download_cfg(cfg)
+    started = time.monotonic()
+    # Acknowledge before download so the room is not silent (and bridges wait).
     try:
-        path = await download_url(url, dl_cfg)
-        mime = guess_mime(path)
-        mxc = await bot.upload_media(path, mime=mime)
+        await bot.send_text(
+            room_id,
+            f"Downloading…\n{url}",
+            reply_to_event_id=event_id if cfg.bot.reply_to_original else None,
+        )
+    except Exception:
+        log.debug("could not send download notice", exc_info=True)
+
+    try:
+        media = await download_url(url, dl_cfg)
+        media_path = media.path
+        thumb_path = media.thumbnail
+        elapsed = time.monotonic() - started
+        log.info(
+            "download ready url=%s size=%d elapsed=%.1fs duration_ms=%s",
+            url,
+            media.size,
+            elapsed,
+            media.duration_ms,
+        )
+
+        thumb_mxc: str | None = None
+        if thumb_path and thumb_path.is_file():
+            try:
+                thumb_mxc = await bot.upload_media(thumb_path, mime="image/jpeg")
+            except Exception:
+                log.warning("thumbnail upload failed", exc_info=True)
+                thumb_mxc = None
+
+        mxc = await bot.upload_media(media.path, mime=media.mime)
         reply_to = event_id if cfg.bot.reply_to_original else None
-        caption = effective_caption(cfg, store) or path.name
+        caption = effective_caption(cfg, store) or media.path.name
         await bot.send_video(
             room_id,
             mxc,
-            path,
+            media.path,
             reply_to_event_id=reply_to,
             caption=caption,
-            mime=mime,
+            mime=media.mime,
+            size=media.size,
+            duration_ms=media.duration_ms,
+            width=media.width,
+            height=media.height,
+            thumbnail_mxc=thumb_mxc,
+            thumbnail_path=thumb_path,
         )
         if dedupe:
             dedupe.mark(room_id, url)
-        log.info("posted video for %s -> %s", url, room_id)
+        log.info(
+            "posted video for %s -> %s size=%d elapsed=%.1fs",
+            url,
+            room_id,
+            media.size,
+            time.monotonic() - started,
+        )
     except Exception as exc:
         log.exception("failed for %s: %s", url, exc)
         if effective_notify(cfg, store):
@@ -275,8 +309,10 @@ async def _process_one(
             except Exception:
                 log.exception("also failed to send error notice")
     finally:
-        if path is not None:
-            cleanup_path(path)
+        if media_path is not None:
+            cleanup_path(media_path)
+        if thumb_path is not None:
+            cleanup_path(thumb_path)
 
 
 def cleanup_path(path: Path) -> None:
@@ -284,10 +320,16 @@ def cleanup_path(path: Path) -> None:
         path.unlink(missing_ok=True)
         parent = path.parent
         if parent.name.startswith("job_") and parent.is_dir():
+            # Remove leftover job files (thumb, partials) then the dir.
+            for child in list(parent.iterdir()):
+                try:
+                    child.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
-                next(parent.iterdir())
-            except StopIteration:
                 parent.rmdir()
+            except OSError:
+                pass
     except OSError:
         log.warning("could not remove temp file %s", path)
 
@@ -326,9 +368,8 @@ async def run_bot(cfg: AppConfig) -> None:
     appservice.on_events(bot.handle_appservice_events)
 
     log.info(
-        "starting user=%s backend=%s auto=%s admins=%s data=%s as_url=%s",
+        "starting user=%s downloader=yt-dlp auto=%s admins=%s data=%s as_url=%s",
         cfg.user_id,
-        effective_backend(cfg, store),
         effective_auto(cfg, store),
         cfg.bot.admin_users or "(none)",
         cfg.data_dir,
@@ -338,7 +379,10 @@ async def run_bot(cfg: AppConfig) -> None:
     try:
         await bot.start()
         await appservice.start()
-        log.info("ready — listening for appservice transactions at %s", cfg.appservice.address)
+        log.info(
+            "ready — listening for appservice transactions at %s",
+            cfg.appservice.address,
+        )
         await asyncio.Event().wait()
     finally:
         await appservice.stop()

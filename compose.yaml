@@ -31,8 +31,6 @@ services:
     volumes:
       # config.yaml, registration.yaml, cookies, downloads, runtime_state
       - ./data:/data
-      # Uncomment if download.backend: metube
-      # - /path/to/metube/downloads:/downloads:ro
     environment:
       TZ: UTC
       REELGRAB_DATA: /data

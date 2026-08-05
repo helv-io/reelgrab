@@ -63,15 +63,10 @@ class BotConfig:
 
 @dataclass
 class DownloadConfig:
-    backend: str = "ytdlp"
     work_dir: str = "downloads"
     cookies_file: str = "cookies.txt"
     format: str = "bv*+ba/b"
     merge_output_format: str = "mp4"
-    metube_url: str = "http://metube:8081"
-    metube_poll_seconds: int = 5
-    metube_timeout_seconds: int = 600
-    metube_download_dir: str = "/downloads"
 
 
 @dataclass

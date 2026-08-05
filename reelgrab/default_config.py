@@ -87,26 +87,17 @@ bot:
     # Relative paths are resolved against the data directory.
     state_file: runtime_state.yaml
 
-# Download backend.
+# Download (in-process yt-dlp; ffmpeg is used for probe + thumbnail).
 download:
-    # "ytdlp" (recommended) or "metube"
-    backend: ytdlp
     # Temp download directory (relative to data dir unless absolute).
     work_dir: downloads
     # Netscape cookies.txt for sites that need a session (often Instagram).
     # Relative to data dir.
     cookies_file: cookies.txt
-    # yt-dlp format selector.
+    # yt-dlp format selector (video+audio merged when needed).
     format: bv*+ba/b
-    # Remux/merge container when possible.
+    # Remux container after download.
     merge_output_format: mp4
-    # MeTube base URL (only if backend: metube). Use an internal URL if MeTube
-    # is reverse-proxied behind auth — do not use a public Authelia URL.
-    metube_url: http://metube:8081
-    metube_poll_seconds: 5
-    metube_timeout_seconds: 600
-    # Directory where MeTube writes finished files (mount the MeTube volume here).
-    metube_download_dir: /downloads
 
 # URL detection (Instagram short-form by default; extend patterns for other sites).
 instagram:

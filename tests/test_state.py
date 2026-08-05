@@ -14,12 +14,12 @@ class TestStateStore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "runtime_state.yaml"
             store = StateStore(path)
-            store.update(auto_download=False, backend="metube")
+            store.update(auto_download=False, success_caption="hi")
             self.assertTrue(path.is_file())
 
             store2 = StateStore(path)
             self.assertIs(store2.state.auto_download, False)
-            self.assertEqual(store2.state.backend, "metube")
+            self.assertEqual(store2.state.success_caption, "hi")
 
     def test_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
