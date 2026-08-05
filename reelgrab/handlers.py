@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from reelgrab.commands import (
+    KNOWN_COMMANDS,
     effective_auto,
     effective_backend,
     effective_caption,
@@ -119,14 +120,28 @@ async def handle_message(
     text_strip = (body or "").strip()
     low = text_strip.lower()
     prefixes = force_prefixes(cfg)
+    first = low.split()[0] if low.split() else ""
+    # Strip leading bot mention aliases
+    if first in ("reelgrab", "grabbot", "bot", "rg") and len(low.split()) > 1:
+        first = low.split()[1]
     looks_like_cmd = (
         is_direct
         or text_strip.startswith("!")
         or any(text_strip.startswith(p) for p in prefixes)
-        or low.startswith(("reelgrab ", "grabbot ", "rg "))
-        or low.split()[:1] == ["help"]
+        or low.startswith(("reelgrab ", "grabbot ", "rg ", "bot "))
+        or first in KNOWN_COMMANDS
     )
     parsed = parse_command(body, cfg) if looks_like_cmd else None
+    if looks_like_cmd and parsed:
+        log.info(
+            "command room=%s sender=%s cmd=%s direct=%s",
+            room_id,
+            sender,
+            parsed[0],
+            is_direct,
+        )
+    elif looks_like_cmd and not parsed:
+        log.debug("looks like cmd but unparsed body=%r", text_strip[:120])
     if parsed:
         cmd, args = parsed
         forced = grab_urls_from_command(cmd, args, body, cfg)

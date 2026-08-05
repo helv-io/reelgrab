@@ -54,6 +54,7 @@ class FakeBot:
         self.sent_video.append((room_id, mxc, path, kwargs))
 
     async def send_text(self, room_id, body, **kwargs) -> None:
+        # formatted_body optional
         self.sent_text.append((room_id, body, kwargs))
 
 

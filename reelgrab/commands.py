@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import shlex
 from typing import TYPE_CHECKING
@@ -17,27 +18,68 @@ log = logging.getLogger("reelgrab.commands")
 # Force-download prefixes (primary + legacy)
 FORCE_PREFIXES = ("!grab", "!ig")
 
-HELP_TEXT = """\
-reelgrab commands (DM me, or use in a room if you are an admin)
+# Known command verbs (first token). Used so DMs/rooms both accept bare commands.
+KNOWN_COMMANDS = frozenset(
+    {
+        "help",
+        "ping",
+        "status",
+        "whoami",
+        "rooms",
+        "allow",
+        "deny",
+        "auto",
+        "backend",
+        "notify",
+        "caption",
+        "grab",
+        "ig",
+        "download",
+        "dl",
+    }
+)
 
-  help              Show this help
-  ping              Liveness check
-  status            Config + cookies + identity
-  whoami            Your MXID as seen by the bot
-  rooms             Joined rooms (ids)
-  allow <room_id>   Restrict downloads to this room (adds to allow-list)
-  deny <room_id>    Remove room from allow-list
-  allow clear       Clear allow-list (all invited rooms)
-  auto on|off       Toggle auto-download on matching links
-  backend ytdlp|metube
-  notify on|off     Failure notices
-  caption <text>    Success caption (use caption clear for default/filename)
-  grab <url>        Download one URL now (same as !grab / !ig)
+# Fixed-width help so Matrix clients can show aligned columns inside <pre>.
+_HELP_ROWS: list[tuple[str, str]] = [
+    ("help", "Show this help"),
+    ("ping", "Liveness check"),
+    ("status", "Config, cookies, identity"),
+    ("whoami", "Your MXID as seen by the bot"),
+    ("rooms", "Joined room IDs"),
+    ("allow <room_id>", "Add room to allow-list"),
+    ("deny <room_id>", "Remove room from allow-list"),
+    ("allow clear", "Clear allow-list (all rooms)"),
+    ("auto on|off", "Auto-download matching links"),
+    ("backend ytdlp|metube", "Download backend"),
+    ("notify on|off", "Failure notices"),
+    ("caption <text>", "Success caption (caption clear = default)"),
+    ("grab <url>", "Download one URL now"),
+    ("!grab <url>", "Same as grab (also !ig)"),
+]
 
-Also works without a keyword:
-  !grab <url>   or   !ig <url>
-  bare matching URLs when auto is on
-"""
+
+def format_help_text() -> tuple[str, str]:
+    """Return (plain body, html formatted_body) with aligned columns."""
+    cmd_w = max(len(c) for c, _ in _HELP_ROWS)
+    lines = [
+        "reelgrab — short-form video grabber",
+        "DM me, or use commands in a room if you are an admin.",
+        "",
+        f"{'Command'.ljust(cmd_w)}  Description",
+        f"{'-' * cmd_w}  -----------",
+    ]
+    for cmd, desc in _HELP_ROWS:
+        lines.append(f"{cmd.ljust(cmd_w)}  {desc}")
+    lines.extend(
+        [
+            "",
+            "Bare matching URLs are downloaded when auto is on.",
+        ]
+    )
+    plain = "\n".join(lines)
+    escaped = html.escape(plain)
+    html_body = f"<pre><code>{escaped}</code></pre>"
+    return plain, html_body
 
 
 def is_admin(sender: str, cfg: AppConfig) -> bool:
@@ -198,7 +240,13 @@ async def handle_command(
     reply = event_id
 
     if cmd == "help":
-        await bot.send_text(room_id, HELP_TEXT, reply_to_event_id=reply)
+        plain, formatted = format_help_text()
+        await bot.send_text(
+            room_id,
+            plain,
+            reply_to_event_id=reply,
+            formatted_body=formatted,
+        )
         return True
 
     if cmd == "ping":
@@ -206,36 +254,50 @@ async def handle_command(
         return True
 
     if cmd == "whoami":
+        plain = f"you={sender}\nbot={bot.user_id}\nadmin={admin}"
         await bot.send_text(
             room_id,
-            f"you={sender}\nbot={bot.user_id}\nadmin={admin}",
+            plain,
             reply_to_event_id=reply,
+            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
         )
         return True
 
     if cmd == "status":
         cookies = cfg.cookies_file_path
         allowed = effective_allowed_rooms(cfg, store)
-        body = "\n".join(
-            [
-                f"bot: {bot.user_id}",
-                f"homeserver: {cfg.homeserver.address}",
-                f"domain: {cfg.homeserver.domain}",
-                f"appservice.id: {cfg.appservice.id}",
-                f"backend: {effective_backend(cfg, store)}",
-                f"auto_download: {effective_auto(cfg, store)}",
-                f"notify_on_failure: {effective_notify(cfg, store)}",
-                f"caption: {effective_caption(cfg, store)!r}",
-                f"allowed_rooms: {allowed or '(all invited)'}",
-                f"cookies: {'present' if cookies.is_file() else 'MISSING'} ({cookies})",
-                f"data_dir: {cfg.data_dir}",
-                f"admins: {cfg.bot.admin_users or '(none configured)'}",
-            ]
+        rows = [
+            ("bot", bot.user_id),
+            ("homeserver", cfg.homeserver.address),
+            ("domain", cfg.homeserver.domain),
+            ("appservice.id", cfg.appservice.id),
+            ("backend", effective_backend(cfg, store)),
+            ("auto_download", str(effective_auto(cfg, store))),
+            ("notify_on_failure", str(effective_notify(cfg, store))),
+            ("caption", repr(effective_caption(cfg, store))),
+            ("allowed_rooms", str(allowed or "(all invited)")),
+            (
+                "cookies",
+                f"{'present' if cookies.is_file() else 'MISSING'} ({cookies})",
+            ),
+            ("data_dir", str(cfg.data_dir)),
+            ("admins", str(cfg.bot.admin_users or "(none configured)")),
+            ("joined_rooms", str(len(bot.joined_room_ids()))),
+        ]
+        key_w = max(len(k) for k, _ in rows)
+        plain = "\n".join(f"{k.ljust(key_w)}  {v}" for k, v in rows)
+        await bot.send_text(
+            room_id,
+            plain,
+            reply_to_event_id=reply,
+            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
         )
-        await bot.send_text(room_id, body, reply_to_event_id=reply)
         return True
 
     if cmd == "rooms":
+        # Refresh from HS so status is current after restarts.
+        if hasattr(bot, "refresh_joined_rooms"):
+            await bot.refresh_joined_rooms()  # type: ignore[attr-defined]
         rooms = bot.joined_room_ids()
         if not rooms:
             await bot.send_text(room_id, "No joined rooms yet.", reply_to_event_id=reply)
@@ -247,8 +309,12 @@ async def handle_command(
             if allowed:
                 mark = " [allowed]" if rid in allowed else " [blocked by allow-list]"
             lines.append(f"{rid}{mark}")
+        plain = "Joined rooms:\n" + "\n".join(lines)
         await bot.send_text(
-            room_id, "Joined rooms:\n" + "\n".join(lines), reply_to_event_id=reply
+            room_id,
+            plain,
+            reply_to_event_id=reply,
+            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
         )
         return True
 

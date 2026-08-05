@@ -48,6 +48,7 @@ class MatrixGateway(Protocol):
         body: str,
         *,
         reply_to_event_id: str | None = None,
+        formatted_body: str | None = None,
     ) -> None: ...
 
 
@@ -62,6 +63,8 @@ class MatrixBot:
         # room_id -> set of joined member MXIDs (best-effort from push + API)
         self._members: dict[str, set[str]] = {}
         self._joined: set[str] = set()
+        # Rooms known to be DMs (m.room.member invite is_direct, or 2 members)
+        self._direct_rooms: set[str] = set()
 
     @property
     def user_id(self) -> str:
@@ -78,6 +81,8 @@ class MatrixBot:
         return sorted(self._joined)
 
     def is_direct_room(self, room_id: str) -> bool:
+        if room_id in self._direct_rooms:
+            return True
         members = self._members.get(room_id)
         if members is not None and len(members) == 2 and self.user_id in members:
             return True
@@ -203,8 +208,11 @@ class MatrixBot:
         except Exception as exc:
             log.warning("join %s failed: %s", room_id, exc)
 
-    async def _ensure_member_cache(self, room_id: str) -> None:
-        if room_id in self._members and self._members[room_id]:
+    async def _ensure_member_cache(self, room_id: str, *, force: bool = False) -> None:
+        # After invite/join we often only know ourselves; refresh until we have a
+        # complete picture (needed for is_direct detection).
+        cached = self._members.get(room_id) or set()
+        if not force and len(cached) >= 2:
             return
         try:
             rid = quote(room_id, safe="")
@@ -215,15 +223,13 @@ class MatrixBot:
             self._members[room_id] = set(joined.keys())
             if self.user_id in self._members[room_id]:
                 self._joined.add(room_id)
+            if len(self._members[room_id]) == 2 and self.user_id in self._members[room_id]:
+                self._direct_rooms.add(room_id)
         except Exception as exc:
             log.debug("joined_members %s failed: %s", room_id, exc)
 
     async def handle_appservice_events(self, events: list[dict[str, Any]]) -> None:
         """Process one transaction batch from the homeserver."""
-        if not self._ready:
-            # Still accept invites / state so we are not stuck after restart.
-            pass
-
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -246,7 +252,16 @@ class MatrixBot:
             await self._handle_member(event)
             return
 
+        if etype == "m.room.encrypted":
+            log.warning(
+                "ignoring encrypted event in %s — enable encryption support or "
+                "disable E2EE for this room/DM",
+                room_id,
+            )
+            return
+
         if etype != "m.room.message":
+            log.debug("ignore event type=%s room=%s", etype, room_id)
             return
 
         if not self._message_handler:
@@ -258,11 +273,24 @@ class MatrixBot:
 
         body = text_body_from_event(event)
         if body is None:
+            content = event.get("content") or {}
+            log.debug(
+                "ignore non-text message room=%s msgtype=%s",
+                room_id,
+                content.get("msgtype"),
+            )
             return
 
         event_id = event.get("event_id") or ""
-        await self._ensure_member_cache(room_id)
+        await self._ensure_member_cache(room_id, force=True)
         is_direct = self.is_direct_room(room_id)
+        log.info(
+            "message room=%s sender=%s direct=%s body=%r",
+            room_id,
+            sender,
+            is_direct,
+            (body or "")[:80],
+        )
 
         await self._message_handler(
             room_id=room_id,
@@ -277,16 +305,22 @@ class MatrixBot:
         state_key = event.get("state_key") or ""
         content = event.get("content") or {}
         membership = content.get("membership") or ""
+        # Matrix DM invites often set is_direct on the invite content.
+        if content.get("is_direct") and state_key == self.user_id:
+            self._direct_rooms.add(room_id)
 
         members = self._members.setdefault(room_id, set())
         if membership == "join":
             members.add(state_key)
             if state_key == self.user_id:
                 self._joined.add(room_id)
+                # Pull full member list so is_direct works immediately.
+                await self._ensure_member_cache(room_id, force=True)
         elif membership in ("leave", "ban"):
             members.discard(state_key)
             if state_key == self.user_id:
                 self._joined.discard(room_id)
+                self._direct_rooms.discard(room_id)
         elif membership == "invite":
             if state_key == self.user_id and self.cfg.bot.join_on_invite:
                 await self._join(room_id)
@@ -382,13 +416,21 @@ class MatrixBot:
         body: str,
         *,
         reply_to_event_id: str | None = None,
+        formatted_body: str | None = None,
     ) -> None:
         content: dict[str, Any] = {"msgtype": "m.notice", "body": body}
+        if formatted_body:
+            content["format"] = "org.matrix.custom.html"
+            content["formatted_body"] = formatted_body
         if reply_to_event_id:
             content["m.relates_to"] = {
                 "m.in_reply_to": {"event_id": reply_to_event_id}
             }
         await self._room_send(room_id, content)
+        log.info("sent notice to %s (%d chars)", room_id, len(body))
+
+    async def refresh_joined_rooms(self) -> None:
+        await self._refresh_joined_rooms()
 
     async def _room_send(self, room_id: str, content: dict[str, Any]) -> None:
         txn_id = f"{int(time.time() * 1000)}{uuid.uuid4().hex[:8]}"

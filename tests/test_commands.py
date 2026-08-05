@@ -49,6 +49,18 @@ class TestCommands(unittest.TestCase):
         self.assertEqual(parse_command("!status", cfg), ("status", []))
         self.assertEqual(parse_command("reelgrab rooms", cfg), ("rooms", []))
 
+    def test_format_help_aligned(self) -> None:
+        from reelgrab.commands import format_help_text
+
+        plain, formatted = format_help_text()
+        self.assertIn("Command", plain)
+        self.assertIn("ping", plain)
+        self.assertIn("<pre>", formatted)
+        # Columns use fixed padding (command column ends before description)
+        for line in plain.splitlines():
+            if line.startswith("ping"):
+                self.assertRegex(line, r"^ping\s{2,}Liveness")
+
     def test_parse_grab_prefix(self) -> None:
         cfg = _cfg()
         cmd = parse_command("!grab https://instagram.com/reel/ABC/", cfg)
@@ -125,6 +137,36 @@ class TestCommands(unittest.TestCase):
                 )
                 self.assertTrue(ok)
                 bot.send_text.assert_awaited()
+
+            asyncio.run(_run())
+
+    def test_handle_help_sends_formatted(self) -> None:
+        import asyncio
+
+        cfg = _cfg()
+        bot = AsyncMock()
+        bot.user_id = "@reelgrab:example.com"
+        bot.joined_room_ids = lambda: []
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+
+            async def _run() -> None:
+                ok = await handle_command(
+                    bot,
+                    cfg,
+                    store,
+                    room_id="!r:example.com",
+                    event_id="$e",
+                    sender="@admin:example.com",
+                    cmd="help",
+                    args=[],
+                    is_direct=True,
+                )
+                self.assertTrue(ok)
+                kwargs = bot.send_text.await_args.kwargs
+                self.assertIn("formatted_body", kwargs)
+                self.assertIn("<pre>", kwargs["formatted_body"])
+                self.assertIn("ping", bot.send_text.await_args.args[1])
 
             asyncio.run(_run())
 
