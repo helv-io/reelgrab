@@ -108,7 +108,7 @@ class TestBootstrap(unittest.TestCase):
             write_default_config(path)
             text = path.read_text()
             self.assertIn("avatar: default", text)
-            self.assertIn("displayname: Reelgrab", text)
+            self.assertIn('displayname: "🎞️ Reelgrab"', text)
 
     def test_avatar_path_default_resolves_to_packaged_icon(self) -> None:
         cfg = parse_config_dict({})

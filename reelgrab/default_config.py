@@ -37,7 +37,7 @@ appservice:
         # Localpart only (no @, no domain).
         username: reelgrab
         # Display name set on startup. Empty = leave unchanged after first set.
-        displayname: Reelgrab
+        displayname: "🎞️ Reelgrab"
         # Avatar set on startup. Matrix profile avatars are mxc:// URIs hosted
         # by your homeserver (federated media). Values:
         #   default  — packaged reelgrab icon (upload + set each start)

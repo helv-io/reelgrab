@@ -30,7 +30,7 @@ class HomeserverConfig:
 @dataclass
 class AppserviceBotConfig:
     username: str = "reelgrab"
-    displayname: str = "Reelgrab"
+    displayname: str = "🎞️ Reelgrab"
     # Path to avatar image, "default" for the packaged icon, or empty to skip.
     avatar: str = "default"
 
