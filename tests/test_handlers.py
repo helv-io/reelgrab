@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from reelgrab.commands import room_allowed_effective
 from reelgrab.config import AppConfig, BotConfig, UrlPatternsConfig

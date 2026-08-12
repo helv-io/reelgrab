@@ -1,5 +1,8 @@
 # reelgrab
 
+[![CI](https://github.com/helv-io/reelgrab/actions/workflows/ci.yml/badge.svg)](https://github.com/helv-io/reelgrab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 <p align="center">
   <img src="images/icon.jpg" alt="reelgrab icon" width="128" height="128">
 </p>
@@ -221,6 +224,10 @@ No external download container is required.
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Layout
 
