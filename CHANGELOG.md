@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-08-12
+
+Elegance / reliability pass. No config, command, or appservice protocol changes.
+
+### Fixed
+
+- Clean up `job_*` temp directories when a download fails (no more leftover junk
+  under `downloads/` after yt-dlp / convert errors).
+- Keep strong references to background download tasks so they are not garbage
+  collected mid-flight.
+
+### Changed
+
+- Clearer failure logging: expected `DownloadError` vs unexpected exceptions,
+  with elapsed time and room/url context; failure notices unchanged.
+- Force-grab / URL extraction only accept absolute `http://` / `https://` URLs
+  (rejects `file:`, `ftp:`, credentialed URLs, etc.). yt-dlp still fetches the
+  intended short-form links.
+- Dockerfile installs the package via `pip install .` (still includes ffmpeg).
+- Small command-handler DRY (`PUBLIC_COMMANDS` / `ADMIN_COMMANDS`).
+
+### Tests
+
+- Coverage for download cleanup-on-failure, notify on/off failure paths,
+  force-grab URL scheme guards, dedupe TTL=0, and preferred/merge-fmt pick.
+
+[0.4.3]: https://github.com/helv-io/reelgrab/releases/tag/v0.4.3
+
 ## [0.4.2] — 2026-08-12
 
 First tagged release. Matrix **appservice** bot that watches rooms for short-form

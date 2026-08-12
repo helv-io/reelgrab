@@ -9,6 +9,7 @@ from reelgrab.urls import (
     canonicalize_url,
     extract_urls,
     find_matching_urls,
+    is_http_url,
     is_matching_url,
 )
 
@@ -100,6 +101,27 @@ class TestUrls(unittest.TestCase):
             "watch https://example.com/clip/123", patterns
         )
         self.assertEqual(len(urls), 1)
+
+    def test_is_http_url_accepts_http_https(self) -> None:
+        self.assertTrue(is_http_url("https://instagram.com/reel/ABC/"))
+        self.assertTrue(is_http_url("http://example.com/x"))
+        self.assertFalse(is_http_url(""))
+        self.assertFalse(is_http_url("ftp://example.com/x"))
+        self.assertFalse(is_http_url("file:///tmp/x"))
+        self.assertFalse(is_http_url("javascript:alert(1)"))
+        self.assertFalse(is_http_url("https://"))
+        self.assertFalse(is_http_url("not a url"))
+        # Embedded credentials obscure the host — reject.
+        self.assertFalse(is_http_url("https://user:pass@example.com/reel/ABC"))
+
+    def test_extract_urls_skips_non_http(self) -> None:
+        text = "see ftp://files.example.com/a.mp4 and https://www.instagram.com/reel/ABC/"
+        urls = extract_urls(text)
+        self.assertEqual(urls, ["https://www.instagram.com/reel/ABC/"])
+
+    def test_canonicalize_non_http_scheme_normalized(self) -> None:
+        # Dedupe keys should still be stable even for odd input.
+        self.assertTrue(canonicalize_url("https://WWW.Example.com/Path/").startswith("https://"))
 
 
 if __name__ == "__main__":

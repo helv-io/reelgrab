@@ -183,6 +183,96 @@ class TestHandlers(unittest.TestCase):
             asyncio.run(_run())
             self.assertEqual(bot.sent_video, [])
 
+    def test_dedupe_disabled_when_ttl_zero(self) -> None:
+        d = DedupeCache(0)
+        room = "!r:example.com"
+        url = "https://www.instagram.com/reel/ABC/"
+        d.mark(room, url)
+        self.assertFalse(d.already_done(room, url))
+
+    def test_force_prefix_accepts_plain_https(self) -> None:
+        cfg = _cfg(auto=False)
+        urls = extract_urls_from_message(
+            "!grab https://example.com/not-a-default-pattern",
+            cfg,
+            auto=False,
+        )
+        self.assertEqual(urls, ["https://example.com/not-a-default-pattern"])
+
+    def test_force_prefix_rejects_non_http_schemes(self) -> None:
+        cfg = _cfg(auto=False)
+        urls = extract_urls_from_message(
+            "!grab file:///tmp/evil.mp4",
+            cfg,
+            auto=False,
+        )
+        self.assertEqual(urls, [])
+
+    def test_handle_message_notifies_on_download_failure(self) -> None:
+        from reelgrab.downloader import DownloadError
+
+        cfg = _cfg()
+        cfg.bot.notify_on_failure = True
+        bot = FakeBot()
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+
+            async def _boom(url, dl_cfg):
+                raise DownloadError("nope")
+
+            async def _run() -> None:
+                with patch("reelgrab.handlers.download_url", side_effect=_boom):
+                    await handle_message(
+                        bot,
+                        cfg,
+                        store,
+                        room_id="!r:example.com",
+                        event_id="$e1",
+                        sender="@user:example.com",
+                        body="https://www.instagram.com/reel/ABC123/",
+                        is_direct=False,
+                        dedupe=DedupeCache(3600),
+                        sem=asyncio.Semaphore(1),
+                    )
+                    await asyncio.sleep(0.1)
+
+            asyncio.run(_run())
+            self.assertEqual(bot.sent_video, [])
+            self.assertEqual(len(bot.sent_text), 1)
+            self.assertIn("Failed to grab media", bot.sent_text[0][1])
+            self.assertIn("nope", bot.sent_text[0][1])
+
+    def test_handle_message_silent_failure_when_notify_off(self) -> None:
+        from reelgrab.downloader import DownloadError
+
+        cfg = _cfg()
+        cfg.bot.notify_on_failure = False
+        bot = FakeBot()
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+
+            async def _boom(url, dl_cfg):
+                raise DownloadError("nope")
+
+            async def _run() -> None:
+                with patch("reelgrab.handlers.download_url", side_effect=_boom):
+                    await handle_message(
+                        bot,
+                        cfg,
+                        store,
+                        room_id="!r:example.com",
+                        event_id="$e1",
+                        sender="@user:example.com",
+                        body="https://www.instagram.com/reel/ABC123/",
+                        dedupe=DedupeCache(60),
+                        sem=asyncio.Semaphore(1),
+                    )
+                    await asyncio.sleep(0.1)
+
+            asyncio.run(_run())
+            self.assertEqual(bot.sent_text, [])
+            self.assertEqual(bot.sent_video, [])
+
 
 if __name__ == "__main__":
     unittest.main()
