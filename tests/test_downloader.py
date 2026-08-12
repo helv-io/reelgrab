@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from reelgrab.config import ConvertConfig, DownloadConfig, parse_config_dict
 from reelgrab.downloader import (
     DownloadError,
     _pick_file,
     build_convert_args,
+    cleanup_job_dir,
+    download_url,
     guess_mime,
 )
 
@@ -42,6 +46,55 @@ class TestDownloaderUtils(unittest.TestCase):
             (job / "empty.mp4").write_bytes(b"")
             with self.assertRaises(DownloadError):
                 _pick_file(job, preferred=None, merge_fmt="mp4")
+
+    def test_pick_file_uses_preferred_and_merge_fmt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td)
+            preferred = job / "clip.webm"
+            merged = job / "clip.mp4"
+            preferred.write_bytes(b"x" * 100)  # below MIN_BYTES
+            merged.write_bytes(b"y" * 20_000)
+            picked = _pick_file(job, preferred=preferred, merge_fmt="mp4")
+            self.assertEqual(picked, merged)
+
+    def test_cleanup_job_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            job = Path(td) / "job_abc123"
+            job.mkdir()
+            (job / "partial.mp4").write_bytes(b"x" * 100)
+            cleanup_job_dir(job)
+            self.assertFalse(job.exists())
+
+    def test_download_url_cleans_job_dir_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td) / "downloads"
+            cfg = DownloadConfig(work_dir=str(work), cookies_file=str(Path(td) / "nope.txt"))
+            saw_job = {"ok": False}
+
+            class Boom:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def extract_info(self, url, download=True):
+                    # Simulate yt-dlp creating junk then failing.
+                    jobs = list(work.glob("job_*"))
+                    if jobs:
+                        saw_job["ok"] = True
+                        (jobs[0] / "junk.part").write_bytes(b"partial")
+                    raise RuntimeError("network down")
+
+            async def _run() -> None:
+                with patch("yt_dlp.YoutubeDL", return_value=Boom()):
+                    with self.assertRaises(DownloadError):
+                        await download_url("https://example.com/reel/x", cfg)
+
+            asyncio.run(_run())
+            self.assertTrue(saw_job["ok"])
+            self.assertTrue(work.is_dir())
+            self.assertEqual(list(work.glob("job_*")), [])
 
     def test_build_convert_args_defaults(self) -> None:
         src = Path("/tmp/in.webm")

@@ -113,6 +113,21 @@ class TestCommands(unittest.TestCase):
         assert urls is not None
         self.assertEqual(len(urls), 1)
 
+    def test_grab_urls_force_http_non_matching_pattern(self) -> None:
+        cfg = _cfg()
+        urls = grab_urls_from_command(
+            "grab",
+            ["https://example.com/custom/clip"],
+            "",
+            cfg,
+        )
+        self.assertEqual(urls, ["https://example.com/custom/clip"])
+
+    def test_grab_urls_rejects_file_scheme(self) -> None:
+        cfg = _cfg()
+        urls = grab_urls_from_command("grab", ["file:///etc/passwd"], "", cfg)
+        self.assertEqual(urls, [])
+
     def test_handle_ping(self) -> None:
         import asyncio
 

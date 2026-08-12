@@ -36,7 +36,8 @@ services:
       REELGRAB_DATA: /data
       REELGRAB_DOCKER: "1"
     # Appservice HTTP is reached by the HS at appservice.address (e.g. http://reelgrab:29399).
-    # Publish only if the homeserver is not on the same Docker network:
+    # In-container health: GET /health (no auth). Publish only if the HS is not
+    # on the same Docker network:
     # ports:
     #   - "29399:29399"
     # --- pick ONE network style ---

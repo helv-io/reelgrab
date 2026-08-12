@@ -6,7 +6,9 @@ import asyncio
 import logging
 import time
 import traceback
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from reelgrab.commands import (
     KNOWN_COMMANDS,
@@ -21,12 +23,15 @@ from reelgrab.commands import (
     room_allowed_effective,
 )
 from reelgrab.config import AppConfig, DownloadConfig
-from reelgrab.downloader import download_url
+from reelgrab.downloader import DownloadError, cleanup_media_path, download_url
 from reelgrab.matrix_client import MatrixBot, MatrixGateway
 from reelgrab.state import StateStore
-from reelgrab.urls import canonicalize_url, find_matching_urls
+from reelgrab.urls import canonicalize_url, find_matching_urls, is_http_url
 
 log = logging.getLogger("reelgrab.handlers")
+
+# Strong refs so fire-and-forget download tasks are not GC'd mid-flight.
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 class DedupeCache:
@@ -80,7 +85,7 @@ def extract_urls_from_message(body: str, cfg: AppConfig, *, auto: bool) -> list[
             urls = find_matching_urls(rest, patterns)
             if not urls and rest:
                 token = rest.split()[0]
-                if token.startswith("http"):
+                if is_http_url(token):
                     urls = [token]
             break
     if not matched_prefix and auto:
@@ -94,6 +99,12 @@ def extract_urls_from_message(body: str, cfg: AppConfig, *, auto: bool) -> list[
             seen.add(key)
             out.append(u)
     return out
+
+
+def _spawn_background(coro: Coroutine[Any, Any, None], *, name: str) -> None:
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def handle_message(
@@ -226,7 +237,34 @@ async def _queue_downloads(
             else:
                 await _process_one(bot, cfg, store, room_id, event_id, u, dedupe)
 
-        asyncio.create_task(_job(), name=f"reelgrab:{room_id}:{url[:40]}")
+        _spawn_background(_job(), name=f"reelgrab:{room_id}:{url[:40]}")
+
+
+async def _notify_failure(
+    bot: MatrixGateway,
+    cfg: AppConfig,
+    store: StateStore,
+    *,
+    room_id: str,
+    event_id: str,
+    url: str,
+    exc: BaseException,
+) -> None:
+    if not effective_notify(cfg, store):
+        return
+    try:
+        stack = traceback.format_exc()
+        body = f"Failed to grab media:\n{exc}\n\n{stack}".strip()
+        # Keep notices readable in clients / bridges.
+        if len(body) > 3500:
+            body = body[:3490] + "\n…"
+        await bot.send_text(
+            room_id,
+            body,
+            reply_to_event_id=event_id if cfg.bot.reply_to_original else None,
+        )
+    except Exception:
+        log.exception("also failed to send error notice for %s", url)
 
 
 async def _process_one(
@@ -264,7 +302,7 @@ async def _process_one(
             try:
                 thumb_mxc = await bot.upload_media(thumb_path, mime="image/jpeg")
             except Exception:
-                log.warning("thumbnail upload failed", exc_info=True)
+                log.warning("thumbnail upload failed url=%s", url, exc_info=True)
                 thumb_mxc = None
 
         mxc = await bot.upload_media(media.path, mime=media.mime)
@@ -294,46 +332,38 @@ async def _process_one(
             media.size,
             time.monotonic() - started,
         )
+    except DownloadError as exc:
+        log.error(
+            "download error url=%s room=%s elapsed=%.1fs: %s",
+            url,
+            room_id,
+            time.monotonic() - started,
+            exc,
+        )
+        await _notify_failure(
+            bot, cfg, store, room_id=room_id, event_id=event_id, url=url, exc=exc
+        )
     except Exception as exc:
-        log.exception("failed for %s: %s", url, exc)
-        if effective_notify(cfg, store):
-            try:
-                stack = traceback.format_exc()
-                body = f"Failed to grab media:\n{exc}\n\n{stack}".strip()
-                # Keep notices readable in clients / bridges.
-                if len(body) > 3500:
-                    body = body[:3490] + "\n…"
-                await bot.send_text(
-                    room_id,
-                    body,
-                    reply_to_event_id=event_id if cfg.bot.reply_to_original else None,
-                )
-            except Exception:
-                log.exception("also failed to send error notice")
+        log.exception(
+            "unexpected failure url=%s room=%s elapsed=%.1fs: %s",
+            url,
+            room_id,
+            time.monotonic() - started,
+            exc,
+        )
+        await _notify_failure(
+            bot, cfg, store, room_id=room_id, event_id=event_id, url=url, exc=exc
+        )
     finally:
+        # Video and thumbnail share a job_* dir; one cleanup removes both.
         if media_path is not None:
-            cleanup_path(media_path)
-        if thumb_path is not None:
-            cleanup_path(thumb_path)
+            cleanup_media_path(media_path)
+        elif thumb_path is not None:
+            cleanup_media_path(thumb_path)
 
 
-def cleanup_path(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-        parent = path.parent
-        if parent.name.startswith("job_") and parent.is_dir():
-            # Remove leftover job files (thumb, partials) then the dir.
-            for child in list(parent.iterdir()):
-                try:
-                    child.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            try:
-                parent.rmdir()
-            except OSError:
-                pass
-    except OSError:
-        log.warning("could not remove temp file %s", path)
+# Back-compat alias for tests / importers.
+cleanup_path = cleanup_media_path
 
 
 async def run_bot(cfg: AppConfig) -> None:

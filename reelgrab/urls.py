@@ -45,6 +45,23 @@ def normalize_url(url: str) -> str:
     return url.rstrip(_TRAIL_PUNCT)
 
 
+def is_http_url(url: str) -> bool:
+    """True for absolute http(s) URLs with a host (force-grab / outbound fetch)."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        p = urlparse(url.strip())
+    except Exception:
+        return False
+    if p.scheme not in ("http", "https") or not (p.netloc or "").strip():
+        return False
+    # Short-form links never need embedded credentials; reject userinfo so the
+    # effective host cannot be obscured (https://user@host/...).
+    if p.username is not None or p.password is not None:
+        return False
+    return True
+
+
 def extract_urls(text: str) -> list[str]:
     if not text:
         return []
@@ -54,7 +71,7 @@ def extract_urls(text: str) -> list[str]:
     for blob in candidates:
         for match in _URL_RE.finditer(blob):
             url = normalize_url(match.group(0))
-            if url and url not in seen_local:
+            if url and is_http_url(url) and url not in seen_local:
                 seen_local.add(url)
                 found.append(url)
     return found
@@ -62,7 +79,7 @@ def extract_urls(text: str) -> list[str]:
 
 def is_matching_url(url: str, patterns: list[str]) -> bool:
     """Return True if url matches any configured pattern."""
-    if not url:
+    if not url or not is_http_url(url):
         return False
     for pattern in patterns:
         if re.search(pattern, url, re.IGNORECASE):
@@ -78,7 +95,10 @@ def canonicalize_url(url: str) -> str:
         if host.startswith("www."):
             host = host[4:]
         path = p.path.rstrip("/") or "/"
-        return urlunparse((p.scheme.lower() or "https", host, path, "", "", ""))
+        scheme = (p.scheme or "https").lower()
+        if scheme not in ("http", "https"):
+            scheme = "https"
+        return urlunparse((scheme, host, path, "", "", ""))
     except Exception:
         return url
 

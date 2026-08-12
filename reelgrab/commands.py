@@ -18,13 +18,11 @@ log = logging.getLogger("reelgrab.commands")
 # Force-download prefixes (primary + legacy)
 FORCE_PREFIXES = ("!grab", "!ig")
 
-# Known command verbs (first token). Used so DMs/rooms both accept bare commands.
-KNOWN_COMMANDS = frozenset(
+# Public vs admin after alias normalization (see parse_command).
+PUBLIC_COMMANDS = frozenset({"help", "ping", "whoami"})
+ADMIN_COMMANDS = frozenset(
     {
-        "help",
-        "ping",
         "status",
-        "whoami",
         "rooms",
         "allow",
         "deny",
@@ -32,6 +30,15 @@ KNOWN_COMMANDS = frozenset(
         "notify",
         "caption",
         "grab",
+    }
+)
+
+# Known command verbs (first token). Used so DMs/rooms both accept bare commands.
+KNOWN_COMMANDS = frozenset(
+    {
+        *PUBLIC_COMMANDS,
+        *ADMIN_COMMANDS,
+        # grab aliases (normalized in parse_command)
         "ig",
         "download",
         "dl",
@@ -171,20 +178,7 @@ def parse_command(body: str, cfg: AppConfig) -> tuple[str, list[str]] | None:
     }
     cmd = aliases.get(cmd, cmd)
 
-    known = {
-        "help",
-        "ping",
-        "status",
-        "whoami",
-        "rooms",
-        "allow",
-        "deny",
-        "auto",
-        "notify",
-        "caption",
-        "grab",
-    }
-    if cmd not in known:
+    if cmd not in PUBLIC_COMMANDS and cmd not in ADMIN_COMMANDS:
         return None
     return cmd, args
 
@@ -202,19 +196,8 @@ async def handle_command(
     is_direct: bool,
 ) -> bool:
     admin = is_admin(sender, cfg)
-    public_cmds = {"help", "ping", "whoami"}
-    admin_cmds = {
-        "status",
-        "rooms",
-        "allow",
-        "deny",
-        "auto",
-        "notify",
-        "caption",
-        "grab",
-    }
 
-    if cmd in admin_cmds and not admin:
+    if cmd in ADMIN_COMMANDS and not admin:
         if is_direct or cmd == "grab":
             await bot.send_text(
                 room_id,
@@ -224,7 +207,7 @@ async def handle_command(
             return True
         return False
 
-    if cmd not in public_cmds and cmd not in admin_cmds:
+    if cmd not in PUBLIC_COMMANDS and cmd not in ADMIN_COMMANDS:
         return False
 
     reply = event_id
@@ -403,7 +386,7 @@ def grab_urls_from_command(
 ) -> list[str] | None:
     if cmd != "grab":
         return None
-    from reelgrab.urls import find_matching_urls
+    from reelgrab.urls import find_matching_urls, is_http_url
 
     rest = " ".join(args).strip() or body
     for prefix in force_prefixes(cfg):
@@ -411,8 +394,10 @@ def grab_urls_from_command(
             rest = rest[len(prefix) :].strip()
             break
     urls = find_matching_urls(rest, cfg.url_patterns)
-    if not urls and rest.startswith("http"):
-        urls = [rest.split()[0]]
+    if not urls:
+        token = rest.split()[0] if rest else ""
+        if is_http_url(token):
+            urls = [token]
     return urls
 
 

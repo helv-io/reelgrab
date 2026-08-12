@@ -356,6 +356,34 @@ def _pick_file(job_dir: Path, preferred: Path | None, merge_fmt: str | None) -> 
     return pool[0]
 
 
+def cleanup_job_dir(job_dir: Path) -> None:
+    """Best-effort remove a ``job_*`` work directory and its contents."""
+    try:
+        if not job_dir.is_dir():
+            return
+        for child in list(job_dir.iterdir()):
+            try:
+                if child.is_file() or child.is_symlink():
+                    child.unlink(missing_ok=True)
+            except OSError:
+                pass
+        job_dir.rmdir()
+    except OSError as exc:
+        log.warning("could not remove job dir %s: %s", job_dir, exc)
+
+
+def cleanup_media_path(path: Path) -> None:
+    """Remove a downloaded media file and its ``job_*`` parent directory."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        log.warning("could not remove temp file %s", path)
+        return
+    parent = path.parent
+    if parent.name.startswith("job_"):
+        cleanup_job_dir(parent)
+
+
 async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
     """Download ``url`` with yt-dlp, convert for bridges, return MediaFile."""
     work = Path(cfg.work_dir)
@@ -407,7 +435,7 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
             except Exception:
                 preferred = None
 
-        path = _pick_file(job_dir, preferred, cfg.merge_output_format)
+        path = _pick_file(job_dir, preferred, merge_fmt)
         size = path.stat().st_size
         if size < MIN_BYTES:
             raise DownloadError(f"downloaded file too small ({size} bytes): {path.name}")
@@ -452,6 +480,9 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
     try:
         return await asyncio.to_thread(_run)
     except DownloadError:
+        # Caller logs with room context; just avoid leaking temp files.
+        cleanup_job_dir(job_dir)
         raise
     except Exception as exc:
+        cleanup_job_dir(job_dir)
         raise DownloadError(f"yt-dlp failed: {exc}") from exc
