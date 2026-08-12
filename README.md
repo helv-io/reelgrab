@@ -225,6 +225,10 @@ No external download container is required.
 python -m unittest discover -s tests -v
 ```
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
