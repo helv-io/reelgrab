@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import unittest
 from typing import Any
 
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from reelgrab.appservice import AppserviceServer, text_body_from_event

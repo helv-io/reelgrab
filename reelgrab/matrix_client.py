@@ -6,8 +6,9 @@ import logging
 import mimetypes
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import aiofiles

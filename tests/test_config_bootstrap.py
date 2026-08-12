@@ -6,13 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from reelgrab import __app_name__
 from reelgrab.config import (
     bootstrap,
     build_registration,
     parse_config_dict,
     write_default_config,
 )
-from reelgrab import __app_name__
 
 
 class TestBootstrap(unittest.TestCase):
