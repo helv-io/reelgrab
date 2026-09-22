@@ -8,17 +8,27 @@ import logging
 import mimetypes
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from reelgrab.config import ConvertConfig, DownloadConfig
+from reelgrab.urls import is_amplify_video_url, is_http_url
 
 log = logging.getLogger("reelgrab.downloader")
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
 MIN_BYTES = 8_192  # reject empty / stub files
+MAX_DIRECT_BYTES = 512 * 1024 * 1024
+AMPLIFY_HOSTS = frozenset({"video.twimg.com"})
+_DIRECT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 
 class DownloadError(Exception):
@@ -384,98 +394,182 @@ def cleanup_media_path(path: Path) -> None:
         cleanup_job_dir(parent)
 
 
+class _PinnedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only when the next URL stays on an allowed host."""
+
+    def __init__(self, allowed_hosts: frozenset[str]) -> None:
+        super().__init__()
+        self.allowed_hosts = {h.lower() for h in allowed_hosts}
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        parsed = urlparse(newurl)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or host not in self.allowed_hosts:
+            raise DownloadError(f"refusing redirect to {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch_direct_mp4(
+    url: str,
+    dest: Path,
+    *,
+    allowed_hosts: frozenset[str] = AMPLIFY_HOSTS,
+    timeout: float = 60,
+    max_bytes: int = MAX_DIRECT_BYTES,
+) -> Path:
+    """Stream an http(s) MP4 to ``dest``. Redirects must stay on ``allowed_hosts``."""
+    if not is_http_url(url):
+        raise DownloadError("refusing non-http URL")
+    host = (urlparse(url).hostname or "").lower()
+    if host not in {h.lower() for h in allowed_hosts}:
+        raise DownloadError(f"refusing direct download from {host or 'unknown host'}")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    opener = urllib.request.build_opener(_PinnedRedirectHandler(allowed_hosts))
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": _DIRECT_UA, "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8"},
+        method="GET",
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if ctype.startswith("text/") or ctype in {"application/json", "application/xml"}:
+                raise DownloadError(f"direct URL returned {ctype or 'no content-type'}, not video")
+            total = 0
+            with dest.open("wb") as fh:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise DownloadError(
+                            f"direct mp4 exceeds size cap ({max_bytes} bytes)"
+                        )
+                    fh.write(chunk)
+    except DownloadError:
+        dest.unlink(missing_ok=True)
+        raise
+    except urllib.error.URLError as exc:
+        dest.unlink(missing_ok=True)
+        raise DownloadError(f"direct mp4 download failed: {exc}") from exc
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise DownloadError(f"direct mp4 download failed: {exc}") from exc
+
+    if not dest.is_file() or dest.stat().st_size < MIN_BYTES:
+        dest.unlink(missing_ok=True)
+        raise DownloadError("direct mp4 too small or missing")
+    log.info("direct mp4 saved bytes=%d file=%s", dest.stat().st_size, dest.name)
+    return dest
+
+
+def _finish_media(path: Path, job_dir: Path, cfg: DownloadConfig) -> MediaFile:
+    """Convert, probe, and thumbnail a file already on disk."""
+    size = path.stat().st_size
+    if size < MIN_BYTES:
+        raise DownloadError(f"downloaded file too small ({size} bytes): {path.name}")
+
+    conv = cfg.convert if isinstance(cfg.convert, ConvertConfig) else ConvertConfig()
+    path = convert_for_bridges(path, job_dir, conv)
+
+    mime = guess_mime(path)
+    probe = probe_full(path)
+    duration_ms, width, height = probe.duration_ms, probe.width, probe.height
+    if mime.startswith("video/") and duration_ms is not None and duration_ms < 100:
+        raise DownloadError(
+            f"downloaded video is empty/too short ({duration_ms}ms): {path.name}"
+        )
+
+    size = path.stat().st_size
+    thumb_path = job_dir / f"{path.stem}_thumb.jpg"
+    thumb = make_thumbnail(path, thumb_path) if mime.startswith("video/") else None
+
+    log.info(
+        "media ready file=%s size=%d duration_ms=%s %sx%s v=%s a=%s thumb=%s",
+        path.name,
+        size,
+        duration_ms,
+        width,
+        height,
+        probe.video_codec,
+        probe.audio_codec,
+        bool(thumb),
+    )
+    return MediaFile(
+        path=path,
+        mime=mime,
+        size=size,
+        duration_ms=duration_ms,
+        width=width,
+        height=height,
+        thumbnail=thumb,
+    )
+
+
+def _download_with_ytdlp(url: str, job_dir: Path, cfg: DownloadConfig) -> Path:
+    import yt_dlp
+
+    outtmpl = str(job_dir / "%(id)s.%(ext)s")
+    fmt = (cfg.format or "bv*+ba/b").strip()
+    merge_fmt = (cfg.merge_output_format or "mp4").strip() or "mp4"
+    ydl_opts: dict[str, Any] = {
+        "outtmpl": outtmpl,
+        "format": fmt,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "restrictfilenames": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 30,
+        "concurrent_fragment_downloads": 1,
+        "merge_output_format": merge_fmt,
+    }
+
+    cookies = Path(cfg.cookies_file)
+    if cookies.is_file():
+        ydl_opts["cookiefile"] = str(cookies)
+        log.info("using cookies from %s", cookies)
+    else:
+        log.warning(
+            "cookies file missing (%s); some sites may fail or return incomplete media",
+            cookies,
+        )
+
+    log.info("yt-dlp download start url=%s job=%s", url, job_dir.name)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if not info:
+            raise DownloadError("yt-dlp returned no info")
+        if "entries" in info and info["entries"]:
+            info = next(e for e in info["entries"] if e)
+
+        preferred: Path | None = None
+        try:
+            preferred = Path(ydl.prepare_filename(info))
+        except Exception:
+            preferred = None
+
+    return _pick_file(job_dir, preferred, merge_fmt)
+
+
 async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
-    """Download ``url`` with yt-dlp, convert for bridges, return MediaFile."""
+    """Download ``url`` (direct amplify MP4, otherwise yt-dlp) and return MediaFile."""
     work = Path(cfg.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     job_dir = work / f"job_{uuid.uuid4().hex[:12]}"
     job_dir.mkdir(parents=True, exist_ok=True)
+    direct = is_amplify_video_url(url)
 
     def _run() -> MediaFile:
-        import yt_dlp
-
-        outtmpl = str(job_dir / "%(id)s.%(ext)s")
-        fmt = (cfg.format or "bv*+ba/b").strip()
-        merge_fmt = (cfg.merge_output_format or "mp4").strip() or "mp4"
-        ydl_opts: dict[str, Any] = {
-            "outtmpl": outtmpl,
-            "format": fmt,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "restrictfilenames": True,
-            "retries": 5,
-            "fragment_retries": 5,
-            "socket_timeout": 30,
-            "concurrent_fragment_downloads": 1,
-            "merge_output_format": merge_fmt,
-        }
-
-        cookies = Path(cfg.cookies_file)
-        if cookies.is_file():
-            ydl_opts["cookiefile"] = str(cookies)
-            log.info("using cookies from %s", cookies)
+        if direct:
+            log.info("amplify mp4 download start url=%s job=%s", url, job_dir.name)
+            path = fetch_direct_mp4(url, job_dir / "source.mp4")
         else:
-            log.warning(
-                "cookies file missing (%s); some sites may fail or return incomplete media",
-                cookies,
-            )
-
-        log.info("yt-dlp download start url=%s job=%s", url, job_dir.name)
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                raise DownloadError("yt-dlp returned no info")
-            if "entries" in info and info["entries"]:
-                info = next(e for e in info["entries"] if e)
-
-            preferred: Path | None = None
-            try:
-                preferred = Path(ydl.prepare_filename(info))
-            except Exception:
-                preferred = None
-
-        path = _pick_file(job_dir, preferred, merge_fmt)
-        size = path.stat().st_size
-        if size < MIN_BYTES:
-            raise DownloadError(f"downloaded file too small ({size} bytes): {path.name}")
-
-        # Mobile/bridge-friendly re-encode (configurable).
-        conv = cfg.convert if isinstance(cfg.convert, ConvertConfig) else ConvertConfig()
-        path = convert_for_bridges(path, job_dir, conv)
-
-        mime = guess_mime(path)
-        probe = probe_full(path)
-        duration_ms, width, height = probe.duration_ms, probe.width, probe.height
-        if mime.startswith("video/") and duration_ms is not None and duration_ms < 100:
-            raise DownloadError(
-                f"downloaded video is empty/too short ({duration_ms}ms): {path.name}"
-            )
-
-        size = path.stat().st_size
-        thumb_path = job_dir / f"{path.stem}_thumb.jpg"
-        thumb = make_thumbnail(path, thumb_path) if mime.startswith("video/") else None
-
-        log.info(
-            "media ready file=%s size=%d duration_ms=%s %sx%s v=%s a=%s thumb=%s",
-            path.name,
-            size,
-            duration_ms,
-            width,
-            height,
-            probe.video_codec,
-            probe.audio_codec,
-            bool(thumb),
-        )
-        return MediaFile(
-            path=path,
-            mime=mime,
-            size=size,
-            duration_ms=duration_ms,
-            width=width,
-            height=height,
-            thumbnail=thumb,
-        )
+            path = _download_with_ytdlp(url, job_dir, cfg)
+        return _finish_media(path, job_dir, cfg)
 
     try:
         return await asyncio.to_thread(_run)
@@ -485,4 +579,5 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
         raise
     except Exception as exc:
         cleanup_job_dir(job_dir)
-        raise DownloadError(f"yt-dlp failed: {exc}") from exc
+        label = "direct mp4" if direct else "yt-dlp"
+        raise DownloadError(f"{label} failed: {exc}") from exc

@@ -66,9 +66,10 @@ appservice:
 bot:
     # Automatically download when a matching URL appears in a watched room.
     auto_download: true
-    # Command to force a download, e.g. "!grab https://..."
-    # Alias "!ig ..." is also accepted.
-    command_prefix: "!grab"
+    # Listen prefix. The bot ignores a message unless it contains this exact
+    # token or a supported media URL. Bare chat ("ping", "help", ...) is ignored.
+    # The token is fixed: !reel
+    command_prefix: "!reel"
     # If non-empty, only these room IDs get auto-downloads / force commands.
     # Empty list = every room the bot has joined.
     # Admins can also manage this at runtime via DM: allow / deny / allow clear
@@ -152,6 +153,8 @@ urls:
         - tiktok\\.com/t/
         - vm\\.tiktok\\.com/
         - vt\\.tiktok\\.com/
+        # Twitter/X amplify_video CDN direct MP4
+        - video\\.twimg\\.com/amplify_video/.+\\.mp4
 
 # Logging.
 logging:
