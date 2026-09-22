@@ -9,8 +9,14 @@ from reelgrab.urls import (
     canonicalize_url,
     extract_urls,
     find_matching_urls,
+    is_amplify_video_url,
     is_http_url,
     is_matching_url,
+)
+
+AMPLIFY = (
+    "https://video.twimg.com/amplify_video/2102222769186537472/"
+    "vid/avc1/3840x2160/lweKF1l9KuqH6_Jl.mp4?tag=29"
 )
 
 PATTERNS = list(DEFAULT_URL_PATTERNS)
@@ -118,6 +124,44 @@ class TestUrls(unittest.TestCase):
         text = "see ftp://files.example.com/a.mp4 and https://www.instagram.com/reel/ABC/"
         urls = extract_urls(text)
         self.assertEqual(urls, ["https://www.instagram.com/reel/ABC/"])
+
+    def test_amplify_video_example_and_variants(self) -> None:
+        found = find_matching_urls(f"look {AMPLIFY}", PATTERNS)
+        self.assertEqual(found, [AMPLIFY])
+        self.assertTrue(is_amplify_video_url(AMPLIFY))
+        no_query = AMPLIFY.split("?", 1)[0]
+        self.assertTrue(is_amplify_video_url(no_query))
+        older = (
+            "http://video.twimg.com/amplify_video/1499/vid/720x720/abcDEF.mp4"
+        )
+        self.assertTrue(is_amplify_video_url(older))
+        self.assertTrue(is_amplify_video_url(AMPLIFY.replace("video.", "VIDEO.")))
+        # Trailing punctuation in chat is stripped before matching.
+        self.assertEqual(find_matching_urls(AMPLIFY + ".", PATTERNS), [AMPLIFY])
+
+    def test_amplify_video_rejects_close_but_wrong_shapes(self) -> None:
+        self.assertFalse(
+            is_amplify_video_url(
+                "https://video.twimg.com/amplify_video/1/pl/playlist.m3u8"
+            )
+        )
+        self.assertFalse(
+            is_amplify_video_url(
+                "https://video.twimg.com/ext_tw_video/1/pu/vid/avc1/320x180/a.mp4"
+            )
+        )
+        self.assertFalse(
+            is_amplify_video_url("https://twitter.com/user/status/2102222769186537472")
+        )
+        self.assertEqual(
+            find_matching_urls("https://x.com/user/status/1", PATTERNS),
+            [],
+        )
+
+    def test_amplify_dedupes_tag_query(self) -> None:
+        bare = AMPLIFY.split("?", 1)[0]
+        text = f"{AMPLIFY} {bare}?tag=14"
+        self.assertEqual(len(find_matching_urls(text, PATTERNS)), 1)
 
     def test_canonicalize_non_http_scheme_normalized(self) -> None:
         # Dedupe keys should still be stable even for odd input.

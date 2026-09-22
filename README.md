@@ -145,10 +145,12 @@ No extra homeserver config is required beyond a working appservice registration:
 
 ## Using the bot
 
+The bot stays quiet unless a message contains the exact token `!reel` or a supported media URL. Bare chat such as `ping` gets no reply.
+
 1. DM `@reelgrab:example.com`.
-2. Send `help` / `status` (admin commands need your MXID in `bot.admin_users`).
+2. Send `!reel help` / `!reel status` (admin commands need your MXID in `bot.admin_users`).
 3. Invite the bot to rooms that receive video links.
-4. Optional: `allow !roomid:example.com`.
+4. Optional: `!reel allow !roomid:example.com`.
 
 **Bridged rooms:** If you use the bot in rooms bridged from other networks (e.g. Instagram, WhatsApp, Discord via [mau.dev](https://docs.mau.fi/) bridges), **relaying must be active** for that room. Without relay mode, messages from the remote side are not visible to the appservice bot in the same way, so links will not be picked up. Enable relay on the bridge for those rooms the same way you would for other bots that need to see bridged traffic.
 
@@ -156,17 +158,17 @@ No extra homeserver config is required beyond a working appservice registration:
 
 | Command | Effect |
 |---------|--------|
-| `help` | Command list |
-| `ping` | pong |
-| `status` | runtime + cookies + allow-list |
-| `whoami` | your MXID |
-| `rooms` | joined room IDs |
-| `allow <room_id>` / `allow clear` | allow-list |
-| `deny <room_id>` | remove from allow-list |
-| `auto on\|off` | auto-download |
-| `notify on\|off` | failure notices (traceback) |
-| `caption <text>` | optional m.video body (empty = filename) |
-| `!grab <url>` | force one download |
+| `!reel help` | Command list |
+| `!reel ping` | pong |
+| `!reel status` | runtime + cookies + allow-list |
+| `!reel whoami` | your MXID |
+| `!reel rooms` | joined room IDs |
+| `!reel allow <room_id>` / `!reel allow clear` | allow-list |
+| `!reel deny <room_id>` | remove from allow-list |
+| `!reel auto on\|off` | auto-download |
+| `!reel notify on\|off` | failure notices (traceback) |
+| `!reel caption <text>` | optional m.video body (empty = filename) |
+| `!reel <url>` | force one download (any http URL; admin) |
 
 On success the bot posts **only** the `m.video` (no “Downloading…” / “Grabbed…” notices). On failure it posts an `m.notice` with the error traceback when `notify_on_failure` is on. Preventing mautrix bridges from relaying that video back to the remote chat is a **bridge** setting (relay mode / filters), not something a third-party appservice can reliably force.
 
@@ -186,6 +188,7 @@ Short-form only (not full long-form pages):
 | YouTube | `/shorts/` only (not `watch?v=`) |
 | Facebook | `/reel/`, `/reels/`, `/share/r/`, `fb.watch` |
 | TikTok | `/@…/video/…`, `vm.tiktok.com`, `vt.tiktok.com`, `/t/` |
+| Twitter/X | `video.twimg.com/amplify_video/…/vid/…/*.mp4` (direct CDN MP4, including `?tag=N`) |
 
 Override or extend via `urls.url_patterns` in `config.yaml`.
 
@@ -195,7 +198,7 @@ Export Netscape `cookies.txt` into `data/cookies.txt` when a site requires a ses
 
 ## Download
 
-Downloads run **in-process** with **yt-dlp**. After download, **ffmpeg** re-encodes to a mobile-friendly **H.264 + AAC MP4**. Override under `download.convert` in `config.yaml`.
+Instagram, TikTok, Shorts, and the other short-form hosts are downloaded **in-process** with **yt-dlp**. `video.twimg.com` amplify_video links are already MP4 files, so those are fetched directly over HTTP (redirects must stay on `video.twimg.com`) and then follow the same convert path. After download, **ffmpeg** re-encodes to a mobile-friendly **H.264 + AAC MP4**. Override under `download.convert` in `config.yaml`.
 
 ```yaml
 download:

@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import shlex
 from typing import TYPE_CHECKING
 
 from reelgrab.config import AppConfig
 from reelgrab.state import StateStore
+from reelgrab.urls import is_http_url, normalize_url
 
 if TYPE_CHECKING:
     from reelgrab.matrix_client import MatrixGateway
 
 log = logging.getLogger("reelgrab.commands")
 
-# Force-download prefixes (primary + legacy)
-FORCE_PREFIXES = ("!grab", "!ig")
+# Exact listen / command token. Not configurable: bare words must not trigger.
+REEL_PREFIX = "!reel"
+_REEL_PREFIX_RE = re.compile(r"(?:^|\s)!reel(?=\s|$)")
 
 # Public vs admin after alias normalization (see parse_command).
 PUBLIC_COMMANDS = frozenset({"help", "ping", "whoami"})
@@ -33,33 +36,20 @@ ADMIN_COMMANDS = frozenset(
     }
 )
 
-# Known command verbs (first token). Used so DMs/rooms both accept bare commands.
-KNOWN_COMMANDS = frozenset(
-    {
-        *PUBLIC_COMMANDS,
-        *ADMIN_COMMANDS,
-        # grab aliases (normalized in parse_command)
-        "ig",
-        "download",
-        "dl",
-    }
-)
-
 # Fixed-width help so Matrix clients can show aligned columns inside <pre>.
 _HELP_ROWS: list[tuple[str, str]] = [
-    ("help", "Show this help"),
-    ("ping", "Liveness check"),
-    ("status", "Config, cookies, identity"),
-    ("whoami", "Your MXID as seen by the bot"),
-    ("rooms", "Joined room IDs"),
-    ("allow <room_id>", "Add room to allow-list"),
-    ("deny <room_id>", "Remove room from allow-list"),
-    ("allow clear", "Clear allow-list (all rooms)"),
-    ("auto on|off", "Auto-download matching links"),
-    ("notify on|off", "Failure notices"),
-    ("caption <text>", "Success caption (caption clear = default)"),
-    ("grab <url>", "Download one URL now"),
-    ("!grab <url>", "Same as grab (also !ig)"),
+    ("!reel help", "Show this help"),
+    ("!reel ping", "Liveness check"),
+    ("!reel status", "Config, cookies, identity"),
+    ("!reel whoami", "Your MXID as seen by the bot"),
+    ("!reel rooms", "Joined room IDs"),
+    ("!reel allow <room_id>", "Add room to allow-list"),
+    ("!reel deny <room_id>", "Remove room from allow-list"),
+    ("!reel allow clear", "Clear allow-list (all rooms)"),
+    ("!reel auto on|off", "Auto-download matching links"),
+    ("!reel notify on|off", "Failure notices"),
+    ("!reel caption <text>", "Success caption (caption clear = default)"),
+    ("!reel <url>", "Download one URL now"),
 ]
 
 
@@ -67,8 +57,9 @@ def format_help_text() -> tuple[str, str]:
     """Return (plain body, html formatted_body) with aligned columns."""
     cmd_w = max(len(c) for c, _ in _HELP_ROWS)
     lines = [
-        "reelgrab — short-form video grabber",
-        "DM me, or use commands in a room if you are an admin.",
+        "reelgrab: short-form video grabber",
+        "Commands need the !reel prefix. A supported video URL is grabbed on its own.",
+        "Anything else is ignored.",
         "",
         f"{'Command'.ljust(cmd_w)}  Description",
         f"{'-' * cmd_w}  -----------",
@@ -125,56 +116,60 @@ def room_allowed_effective(room_id: str, cfg: AppConfig, store: StateStore) -> b
     return room_id in allowed
 
 
+def text_after_reel_prefix(text: str) -> str | None:
+    """Text after the ``!reel`` token, or None when that exact token is absent.
+
+    ``!reel`` must be a whole token (start or whitespace before it, whitespace
+    or end after it) so ``!reelgrab`` and ``!reels`` do not match.
+    """
+    raw = text or ""
+    match = _REEL_PREFIX_RE.search(raw)
+    if not match:
+        return None
+    return raw[match.end() :].strip()
+
+
+def message_has_reel_prefix(text: str) -> bool:
+    return text_after_reel_prefix(text) is not None
+
+
 def force_prefixes(cfg: AppConfig) -> tuple[str, ...]:
-    """Configured force-download prefixes plus legacy aliases."""
-    primary = (cfg.bot.command_prefix or "!grab").strip()
-    out: list[str] = []
-    for p in (primary, *FORCE_PREFIXES):
-        if p and p not in out:
-            out.append(p)
-    return tuple(out)
+    """The only command prefix. ``cfg`` is unused; the token is fixed."""
+    del cfg
+    return (REEL_PREFIX,)
 
 
 def parse_command(body: str, cfg: AppConfig) -> tuple[str, list[str]] | None:
+    """Parse a command only when the body contains the ``!reel`` token."""
+    del cfg
     text = (body or "").strip()
     if not text:
         return None
 
-    for prefix in force_prefixes(cfg):
-        if text.startswith(prefix):
-            # Ensure "!grabx" is not treated as "!grab"
-            rest = text[len(prefix) :]
-            if rest and not rest[0].isspace() and rest[0] not in "/":
-                # only allow if prefix is full token, unless rest empty after strip of one space
-                if not rest.startswith((" ", "\t")):
-                    continue
-            rest = rest.strip()
-            if not rest:
-                return ("help", [])
-            return ("grab", [rest])
+    rest = text_after_reel_prefix(text)
+    if rest is None:
+        return None
+    if not rest:
+        return ("help", [])
 
-    if text.startswith("!"):
-        text = text[1:].strip()
+    first = rest.split(maxsplit=1)[0]
+    if is_http_url(normalize_url(first)):
+        return ("grab", [rest])
 
     try:
-        parts = shlex.split(text)
+        parts = shlex.split(rest)
     except ValueError:
-        parts = text.split()
+        parts = rest.split()
     if not parts:
         return None
 
     cmd = parts[0].lower()
-    if cmd in ("reelgrab", "grabbot", "bot", "rg") and len(parts) > 1:
-        cmd = parts[1].lower()
-        args = parts[2:]
-    else:
-        args = parts[1:]
-
-    # normalize aliases
+    args = parts[1:]
     aliases = {
         "ig": "grab",
         "download": "grab",
         "dl": "grab",
+        "grab": "grab",
     }
     cmd = aliases.get(cmd, cmd)
 
@@ -304,7 +299,7 @@ async def handle_command(
         if not args:
             await bot.send_text(
                 room_id,
-                "Usage: allow <room_id> | allow clear",
+                "Usage: !reel allow <room_id> | !reel allow clear",
                 reply_to_event_id=reply,
             )
             return True
@@ -326,7 +321,7 @@ async def handle_command(
 
     if cmd == "deny":
         if not args:
-            await bot.send_text(room_id, "Usage: deny <room_id>", reply_to_event_id=reply)
+            await bot.send_text(room_id, "Usage: !reel deny <room_id>", reply_to_event_id=reply)
             return True
         rid = args[0]
         current = [r for r in effective_allowed_rooms(cfg, store) if r != rid]
@@ -340,7 +335,7 @@ async def handle_command(
 
     if cmd == "auto":
         if not args or args[0].lower() not in ("on", "off"):
-            await bot.send_text(room_id, "Usage: auto on|off", reply_to_event_id=reply)
+            await bot.send_text(room_id, "Usage: !reel auto on|off", reply_to_event_id=reply)
             return True
         on = args[0].lower() == "on"
         store.update(auto_download=on)
@@ -349,7 +344,7 @@ async def handle_command(
 
     if cmd == "notify":
         if not args or args[0].lower() not in ("on", "off"):
-            await bot.send_text(room_id, "Usage: notify on|off", reply_to_event_id=reply)
+            await bot.send_text(room_id, "Usage: !reel notify on|off", reply_to_event_id=reply)
             return True
         on = args[0].lower() == "on"
         store.update(notify_on_failure=on)
@@ -362,7 +357,7 @@ async def handle_command(
         if not args:
             await bot.send_text(
                 room_id,
-                "Usage: caption <text> | caption clear",
+                "Usage: !reel caption <text> | !reel caption clear",
                 reply_to_event_id=reply,
             )
             return True
@@ -386,13 +381,12 @@ def grab_urls_from_command(
 ) -> list[str] | None:
     if cmd != "grab":
         return None
-    from reelgrab.urls import find_matching_urls, is_http_url
+    from reelgrab.urls import find_matching_urls
 
     rest = " ".join(args).strip() or body
-    for prefix in force_prefixes(cfg):
-        if rest.startswith(prefix):
-            rest = rest[len(prefix) :].strip()
-            break
+    after = text_after_reel_prefix(rest)
+    if after is not None:
+        rest = after
     urls = find_matching_urls(rest, cfg.url_patterns)
     if not urls:
         token = rest.split()[0] if rest else ""

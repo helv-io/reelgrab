@@ -30,6 +30,8 @@ class TestBootstrap(unittest.TestCase):
             self.assertIn("username: reelgrab", text)
             self.assertIn("example.com", text)
             self.assertNotIn("instamatrix", text)
+            self.assertIn('command_prefix: "!reel"', text)
+            self.assertIn("amplify_video", text)
 
     def test_first_run_creates_config_and_exits(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -66,6 +68,16 @@ class TestBootstrap(unittest.TestCase):
 
             cfg_text = (d / "config.yaml").read_text()
             self.assertNotIn("as_token: generate", cfg_text)
+
+    def test_saved_patterns_still_match_amplify(self) -> None:
+        # Existing config.yaml files list patterns explicitly and will not
+        # be rewritten. The amplify pattern is merged in at load time.
+        cfg = parse_config_dict(
+            {"urls": {"url_patterns": [r"instagram\.com/reel/"]}}
+        )
+        blob = " ".join(cfg.url_patterns)
+        self.assertIn("instagram", blob)
+        self.assertIn("amplify_video", blob)
 
     def test_registration_regex(self) -> None:
         cfg = parse_config_dict(

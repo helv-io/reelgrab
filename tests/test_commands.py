@@ -45,35 +45,39 @@ def _cfg(**kwargs) -> AppConfig:
 class TestCommands(unittest.TestCase):
     def test_parse_help(self) -> None:
         cfg = _cfg()
-        self.assertEqual(parse_command("help", cfg), ("help", []))
-        self.assertEqual(parse_command("!status", cfg), ("status", []))
-        self.assertEqual(parse_command("reelgrab rooms", cfg), ("rooms", []))
+        # Bare chat and the old prefixes are not commands.
+        self.assertIsNone(parse_command("help", cfg))
+        self.assertIsNone(parse_command("ping", cfg))
+        self.assertIsNone(parse_command("!status", cfg))
+        self.assertIsNone(parse_command("reelgrab rooms", cfg))
+        self.assertIsNone(parse_command("!grab https://instagram.com/reel/ABC/", cfg))
+        self.assertIsNone(parse_command("!ig https://instagram.com/reel/ABC/", cfg))
+        self.assertIsNone(parse_command("!reelgrab help", cfg))
+        self.assertIsNone(parse_command("!reels help", cfg))
+        self.assertEqual(parse_command("!reel help", cfg), ("help", []))
+        self.assertEqual(parse_command("!reel status", cfg), ("status", []))
+        self.assertEqual(parse_command("hey !reel rooms", cfg), ("rooms", []))
 
     def test_format_help_aligned(self) -> None:
         from reelgrab.commands import format_help_text
 
         plain, formatted = format_help_text()
         self.assertIn("Command", plain)
-        self.assertIn("ping", plain)
+        self.assertIn("!reel ping", plain)
         self.assertIn("<pre>", formatted)
         # Columns use fixed padding (command column ends before description)
         for line in plain.splitlines():
-            if line.startswith("ping"):
-                self.assertRegex(line, r"^ping\s{2,}Liveness")
+            if line.startswith("!reel ping"):
+                self.assertRegex(line, r"^!reel ping\s{2,}Liveness")
 
     def test_parse_grab_prefix(self) -> None:
         cfg = _cfg()
-        cmd = parse_command("!grab https://instagram.com/reel/ABC/", cfg)
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        self.assertEqual(cmd[0], "grab")
+        cmd = parse_command("!reel https://instagram.com/reel/ABC/", cfg)
+        self.assertEqual(cmd, ("grab", ["https://instagram.com/reel/ABC/"]))
 
     def test_parse_legacy_ig_prefix(self) -> None:
         cfg = _cfg()
-        cmd = parse_command("!ig https://instagram.com/reel/ABC/", cfg)
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        self.assertEqual(cmd[0], "grab")
+        self.assertIsNone(parse_command("!ig https://instagram.com/reel/ABC/", cfg))
 
     def test_parse_unknown(self) -> None:
         cfg = _cfg()

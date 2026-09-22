@@ -15,7 +15,13 @@ from reelgrab.downloader import (
     build_convert_args,
     cleanup_job_dir,
     download_url,
+    fetch_direct_mp4,
     guess_mime,
+)
+
+AMPLIFY = (
+    "https://video.twimg.com/amplify_video/2102222769186537472/"
+    "vid/avc1/3840x2160/lweKF1l9KuqH6_Jl.mp4?tag=29"
 )
 
 
@@ -150,6 +156,104 @@ class TestDownloaderUtils(unittest.TestCase):
         self.assertEqual(cfg.download.convert.max_width, 1080)
         # defaults preserved
         self.assertEqual(cfg.download.convert.video_codec, "libx264")
+
+    def test_fetch_direct_mp4_local_server(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        payload = b"v" * 20_000
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, fmt: str, *args) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                dest = Path(td) / "source.mp4"
+                url = f"http://127.0.0.1:{port}/amplify_video/1/vid/avc1/2x2/a.mp4"
+                got = fetch_direct_mp4(
+                    url, dest, allowed_hosts=frozenset({"127.0.0.1"})
+                )
+                self.assertEqual(got.read_bytes(), payload)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_fetch_direct_mp4_refuses_off_host_redirect(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(302)
+                self.send_header("Location", "https://example.com/evil.mp4")
+                self.end_headers()
+
+            def log_message(self, fmt: str, *args) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                dest = Path(td) / "source.mp4"
+                url = f"http://127.0.0.1:{port}/amplify_video/1/a.mp4"
+                with self.assertRaises(DownloadError):
+                    fetch_direct_mp4(url, dest, allowed_hosts=frozenset({"127.0.0.1"}))
+                self.assertFalse(dest.exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_fetch_direct_mp4_rejects_other_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "source.mp4"
+            with self.assertRaises(DownloadError):
+                fetch_direct_mp4("https://example.com/a.mp4", dest)
+
+    def test_amplify_url_uses_direct_fetch_not_ytdlp(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = DownloadConfig(
+                work_dir=str(Path(td) / "downloads"),
+                cookies_file=str(Path(td) / "nope.txt"),
+                convert=ConvertConfig(enabled=False),
+            )
+
+            def fake_fetch(url: str, dest: Path, **kwargs):
+                self.assertEqual(url, AMPLIFY)
+                dest.write_bytes(b"m" * 20_000)
+                return dest
+
+            async def _run() -> None:
+                with (
+                    patch("reelgrab.downloader.fetch_direct_mp4", side_effect=fake_fetch),
+                    patch("yt_dlp.YoutubeDL") as ydl,
+                    patch("reelgrab.downloader.probe_full") as probe,
+                    patch("reelgrab.downloader.make_thumbnail", return_value=None),
+                ):
+                    from reelgrab.downloader import ProbeInfo
+
+                    probe.return_value = ProbeInfo(duration_ms=2500, width=320, height=180)
+                    media = await download_url(AMPLIFY, cfg)
+                    ydl.assert_not_called()
+                self.assertGreaterEqual(media.size, 8_192)
+                self.assertEqual(media.mime, "video/mp4")
+                self.assertTrue(str(media.path).endswith("source.mp4"))
+
+            asyncio.run(_run())
 
 
 if __name__ == "__main__":

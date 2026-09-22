@@ -11,22 +11,28 @@ from pathlib import Path
 from typing import Any
 
 from reelgrab.commands import (
-    KNOWN_COMMANDS,
     effective_auto,
     effective_caption,
     effective_notify,
-    force_prefixes,
     grab_urls_from_command,
     handle_command,
     is_admin,
+    message_has_reel_prefix,
     parse_command,
     room_allowed_effective,
+    text_after_reel_prefix,
 )
 from reelgrab.config import AppConfig, DownloadConfig
 from reelgrab.downloader import DownloadError, cleanup_media_path, download_url
 from reelgrab.matrix_client import MatrixBot, MatrixGateway
 from reelgrab.state import StateStore
-from reelgrab.urls import canonicalize_url, find_matching_urls, is_http_url
+from reelgrab.urls import (
+    canonicalize_url,
+    find_matching_urls,
+    is_http_url,
+    is_matching_url,
+    normalize_url,
+)
 
 log = logging.getLogger("reelgrab.handlers")
 
@@ -77,18 +83,17 @@ def extract_urls_from_message(body: str, cfg: AppConfig, *, auto: bool) -> list[
     patterns = cfg.url_patterns
     urls: list[str] = []
 
-    matched_prefix = False
-    for prefix in force_prefixes(cfg):
-        if text.startswith(prefix):
-            matched_prefix = True
-            rest = text[len(prefix) :].strip()
-            urls = find_matching_urls(rest, patterns)
-            if not urls and rest:
-                token = rest.split()[0]
-                if is_http_url(token):
-                    urls = [token]
-            break
-    if not matched_prefix and auto:
+    rest = text_after_reel_prefix(text)
+    if rest is not None:
+        urls = find_matching_urls(rest, patterns) if rest else []
+        if not urls and rest:
+            token = normalize_url(rest.split()[0])
+            if is_http_url(token):
+                urls = [token]
+        # URL may sit before the prefix: "https://... !reel"
+        if not urls:
+            urls = find_matching_urls(text, patterns)
+    elif auto:
         urls = find_matching_urls(text, patterns)
 
     seen: set[str] = set()
@@ -124,82 +129,63 @@ async def handle_message(
         return
 
     text_strip = (body or "").strip()
-    low = text_strip.lower()
-    prefixes = force_prefixes(cfg)
-    first = low.split()[0] if low.split() else ""
-    if first in ("reelgrab", "grabbot", "bot", "rg") and len(low.split()) > 1:
-        first = low.split()[1]
-    looks_like_cmd = (
-        is_direct
-        or text_strip.startswith("!")
-        or any(text_strip.startswith(p) for p in prefixes)
-        or low.startswith(("reelgrab ", "grabbot ", "rg ", "bot "))
-        or first in KNOWN_COMMANDS
-    )
-    parsed = parse_command(body, cfg) if looks_like_cmd else None
-    if looks_like_cmd and parsed:
-        log.info(
-            "command room=%s sender=%s cmd=%s direct=%s",
-            room_id,
-            sender,
-            parsed[0],
-            is_direct,
-        )
-    elif looks_like_cmd and not parsed:
-        log.debug("looks like cmd but unparsed body=%r", text_strip[:120])
-    if parsed:
-        cmd, args = parsed
-        forced = grab_urls_from_command(cmd, args, body, cfg)
-        if forced is not None:
-            if not is_admin(sender, cfg):
-                if is_direct:
-                    await bot.send_text(
-                        room_id,
-                        "Not authorized. Add your MXID to bot.admin_users in config.yaml.",
-                        reply_to_event_id=event_id,
-                    )
-                return
-            if not room_allowed_effective(room_id, cfg, store) and not is_direct:
-                await bot.send_text(
-                    room_id,
-                    "This room is not on the allow-list. DM me: allow " + room_id,
-                    reply_to_event_id=event_id,
+    # Listen gate: !reel, or a supported media URL. Everything else is silence.
+    has_reel = message_has_reel_prefix(text_strip)
+    matched_urls = find_matching_urls(text_strip, cfg.url_patterns)
+    if not has_reel and not matched_urls:
+        return
+
+    if has_reel:
+        parsed = parse_command(body, cfg)
+        if parsed:
+            log.info(
+                "command room=%s sender=%s cmd=%s direct=%s",
+                room_id,
+                sender,
+                parsed[0],
+                is_direct,
+            )
+            cmd, args = parsed
+            forced = grab_urls_from_command(cmd, args, body, cfg)
+            if forced is not None:
+                await _dispatch_grab(
+                    bot,
+                    cfg,
+                    store,
+                    room_id=room_id,
+                    event_id=event_id,
+                    sender=sender,
+                    is_direct=is_direct,
+                    urls=forced,
+                    dedupe=dedupe,
+                    sem=sem,
                 )
                 return
-            await _queue_downloads(
+
+            handled = await handle_command(
                 bot,
                 cfg,
                 store,
                 room_id=room_id,
                 event_id=event_id,
-                urls=forced,
-                dedupe=dedupe,
-                sem=sem,
+                sender=sender,
+                cmd=cmd,
+                args=args,
+                is_direct=is_direct,
             )
-            return
+            if handled:
+                return
+        else:
+            log.debug("!reel present but unparsed body=%r", text_strip[:120])
 
-        handled = await handle_command(
-            bot,
-            cfg,
-            store,
-            room_id=room_id,
-            event_id=event_id,
-            sender=sender,
-            cmd=cmd,
-            args=args,
-            is_direct=is_direct,
-        )
-        if handled:
-            return
-
+    if not matched_urls:
+        return
     if not room_allowed_effective(room_id, cfg, store):
         return
     if not effective_auto(cfg, store):
         return
 
-    urls = extract_urls_from_message(body, cfg, auto=True)
-    if not urls:
-        return
+    urls = matched_urls
 
     await _queue_downloads(
         bot,
@@ -208,6 +194,67 @@ async def handle_message(
         room_id=room_id,
         event_id=event_id,
         urls=urls,
+        dedupe=dedupe,
+        sem=sem,
+    )
+
+
+async def _dispatch_grab(
+    bot: MatrixGateway,
+    cfg: AppConfig,
+    store: StateStore,
+    *,
+    room_id: str,
+    event_id: str,
+    sender: str,
+    is_direct: bool,
+    urls: list[str],
+    dedupe: DedupeCache | None,
+    sem: asyncio.Semaphore | None,
+) -> None:
+    """Handle ``!reel <url>``.
+
+    Supported media URLs download for anyone in an allowed room (same as a
+    paste). Any other http(s) URL still requires an admin.
+    """
+    if not urls:
+        if is_direct:
+            await bot.send_text(
+                room_id,
+                "Usage: !reel <url>",
+                reply_to_event_id=event_id,
+            )
+        return
+
+    patterns = cfg.url_patterns
+    supported = [u for u in urls if is_matching_url(u, patterns)]
+    other = [u for u in urls if u not in supported]
+    if other and not is_admin(sender, cfg):
+        if not supported:
+            if is_direct:
+                await bot.send_text(
+                    room_id,
+                    "Not authorized. Add your MXID to bot.admin_users in config.yaml.",
+                    reply_to_event_id=event_id,
+                )
+            return
+        other = []
+
+    chosen = supported + other
+    if not room_allowed_effective(room_id, cfg, store) and not is_direct:
+        await bot.send_text(
+            room_id,
+            "This room is not on the allow-list. DM me: !reel allow " + room_id,
+            reply_to_event_id=event_id,
+        )
+        return
+    await _queue_downloads(
+        bot,
+        cfg,
+        store,
+        room_id=room_id,
+        event_id=event_id,
+        urls=chosen,
         dedupe=dedupe,
         sem=sem,
     )

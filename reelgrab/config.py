@@ -50,7 +50,8 @@ class AppserviceConfig:
 @dataclass
 class BotConfig:
     auto_download: bool = True
-    command_prefix: str = "!grab"
+    # Fixed listen token. The process only reacts to ``!reel`` (see commands).
+    command_prefix: str = "!reel"
     allowed_rooms: list[str] = field(default_factory=list)
     reply_to_original: bool = True
     # Empty = use filename only as m.video body (no extra success chatter).
@@ -158,7 +159,12 @@ class AppConfig:
 
     @property
     def url_patterns(self) -> list[str]:
-        return list(self.urls.url_patterns)
+        from reelgrab.urls import AMPLIFY_URL_PATTERN
+
+        patterns = list(self.urls.url_patterns)
+        if AMPLIFY_URL_PATTERN not in patterns:
+            patterns.append(AMPLIFY_URL_PATTERN)
+        return patterns
 
     def resolve_path(self, p: str | Path) -> Path:
         path = Path(p)

@@ -36,7 +36,13 @@ DEFAULT_URL_PATTERNS: list[str] = [
     r"tiktok\.com/t/",
     r"vm\.tiktok\.com/",
     r"vt\.tiktok\.com/",
+    # Twitter/X amplify_video CDN: direct MP4 (not status pages).
+    r"video\.twimg\.com/amplify_video/.+\.mp4",
 ]
+
+# Always merged into configured patterns so existing config.yaml files
+# pick up amplify_video without a manual edit.
+AMPLIFY_URL_PATTERN = r"video\.twimg\.com/amplify_video/.+\.mp4"
 
 
 def normalize_url(url: str) -> str:
@@ -75,6 +81,27 @@ def extract_urls(text: str) -> list[str]:
                 seen_local.add(url)
                 found.append(url)
     return found
+
+
+def is_amplify_video_url(url: str) -> bool:
+    """True for video.twimg.com amplify_video direct MP4 URLs.
+
+    Close variants (http/https, ``?tag=N``, ``vid/avc1/{WxH}`` or ``vid/{WxH}``)
+    match. Playlists and other twimg paths do not.
+    """
+    if not is_http_url(url):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host != "video.twimg.com":
+        return False
+    path = (parsed.path or "").lower()
+    if "/amplify_video/" not in path:
+        return False
+    return path.endswith(".mp4")
 
 
 def is_matching_url(url: str, patterns: list[str]) -> bool:
