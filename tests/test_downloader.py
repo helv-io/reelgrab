@@ -112,7 +112,10 @@ class TestDownloaderUtils(unittest.TestCase):
         self.assertIn("-c:a", args)
         self.assertIn("aac", args)
         self.assertIn("yuv420p", args)
-        self.assertIn("baseline", args)
+        self.assertIn("high", args)
+        self.assertIn("4.0", args)
+        self.assertIn("26", args)
+        self.assertIn("2500k", args)
         self.assertIn("+faststart", args)
         self.assertEqual(args[-1], str(dest))
 
@@ -136,6 +139,45 @@ class TestDownloaderUtils(unittest.TestCase):
         self.assertIn("min(720,iw)", joined)
         self.assertIn("-bf", args)
         self.assertIn("0", args)
+
+    def test_legacy_format_prefers_h264(self) -> None:
+        from reelgrab.downloader import bitrate_for_target, quality_ladder, resolve_ytdlp_format
+
+        chosen = resolve_ytdlp_format("bv*+ba/b")
+        self.assertIn("avc1", chosen)
+        self.assertIn("mp4a", chosen)
+        self.assertEqual(resolve_ytdlp_format("worst"), "worst")
+        rate = bitrate_for_target(60_000, 5_000_000)
+        self.assertTrue(rate.endswith("k"))
+        steps = quality_ladder(
+            ConvertConfig(video_crf=23, profile="baseline", level="3.1"),
+            duration_ms=60_000,
+            target_bytes=5_000_000,
+        )
+        self.assertGreaterEqual(len(steps), 2)
+        self.assertEqual(steps[0].video_crf, 23)
+        self.assertEqual(steps[0].profile, "baseline")
+        self.assertGreater(steps[-1].video_crf, steps[0].video_crf)
+
+    def test_legacy_convert_settings_round_trip(self) -> None:
+        cfg = parse_config_dict(
+            {
+                "download": {
+                    "format": "bv*+ba/b",
+                    "convert": {
+                        "force": True,
+                        "video_crf": 23,
+                        "profile": "baseline",
+                        "level": "3.1",
+                    },
+                }
+            }
+        )
+        self.assertTrue(cfg.download.convert.force)
+        self.assertEqual(cfg.download.convert.video_crf, 23)
+        self.assertEqual(cfg.download.convert.profile, "baseline")
+        self.assertEqual(cfg.download.convert.level, "3.1")
+        self.assertEqual(cfg.download.format, "bv*+ba/b")
 
     def test_convert_config_from_yaml(self) -> None:
         cfg = parse_config_dict(

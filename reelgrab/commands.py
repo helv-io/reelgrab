@@ -17,9 +17,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("reelgrab.commands")
 
-# Exact listen / command token. Not configurable: bare words must not trigger.
+# Default listen / command token. ``bot.command_prefix`` overrides this.
 REEL_PREFIX = "!reel"
-_REEL_PREFIX_RE = re.compile(r"(?:^|\s)!reel(?=\s|$)")
 
 # Public vs admin after alias normalization (see parse_command).
 PUBLIC_COMMANDS = frozenset({"help", "ping", "whoami"})
@@ -47,24 +46,26 @@ _HELP_ROWS: list[tuple[str, str]] = [
     ("!reel deny <room_id>", "Remove room from allow-list"),
     ("!reel allow clear", "Clear allow-list (all rooms)"),
     ("!reel auto on|off", "Auto-download matching links"),
-    ("!reel notify on|off", "Failure notices"),
-    ("!reel caption <text>", "Success caption (caption clear = default)"),
+    ("!reel notify on|off", "Short failure line in the room"),
+    ("!reel caption <text>", "Caption override (caption clear = metadata)"),
     ("!reel <url>", "Download one URL now"),
 ]
 
 
-def format_help_text() -> tuple[str, str]:
+def format_help_text(prefix: str = REEL_PREFIX) -> tuple[str, str]:
     """Return (plain body, html formatted_body) with aligned columns."""
-    cmd_w = max(len(c) for c, _ in _HELP_ROWS)
+    rows = [(cmd.replace("!reel", prefix, 1), desc) for cmd, desc in _HELP_ROWS]
+    # The last row is ``!reel <url>``; replace() above only swaps the token once.
+    cmd_w = max(len(c) for c, _ in rows)
     lines = [
         "reelgrab: short-form video grabber",
-        "Commands need the !reel prefix. A supported video URL is grabbed on its own.",
+        f"Commands need the {prefix} prefix. A supported video URL is grabbed on its own.",
         "Anything else is ignored.",
         "",
         f"{'Command'.ljust(cmd_w)}  Description",
         f"{'-' * cmd_w}  -----------",
     ]
-    for cmd, desc in _HELP_ROWS:
+    for cmd, desc in rows:
         lines.append(f"{cmd.ljust(cmd_w)}  {desc}")
     lines.extend(
         [
@@ -116,37 +117,52 @@ def room_allowed_effective(room_id: str, cfg: AppConfig, store: StateStore) -> b
     return room_id in allowed
 
 
-def text_after_reel_prefix(text: str) -> str | None:
-    """Text after the ``!reel`` token, or None when that exact token is absent.
+def configured_prefix(cfg: AppConfig | None) -> str:
+    """Command token from config, or ``!reel`` when unset."""
+    if cfg is None:
+        return REEL_PREFIX
+    raw = (cfg.bot.command_prefix or "").strip()
+    return raw or REEL_PREFIX
 
-    ``!reel`` must be a whole token (start or whitespace before it, whitespace
-    or end after it) so ``!reelgrab`` and ``!reels`` do not match.
+
+def _prefix_re(prefix: str) -> re.Pattern[str]:
+    # Whole token only, so a prefix of ``!reel`` does not match ``!reelgrab``.
+    return re.compile(rf"(?:^|\s){re.escape(prefix)}(?=\s|$)")
+
+
+def text_after_reel_prefix(text: str, cfg: AppConfig | None = None) -> str | None:
+    """Text after the configured command token, or None when that token is absent.
+
+    The token must be whole (start or whitespace before it, whitespace or end
+    after it) so ``!reelgrab`` and ``!reels`` do not match ``!reel``.
     """
     raw = text or ""
-    match = _REEL_PREFIX_RE.search(raw)
+    match = _prefix_re(configured_prefix(cfg)).search(raw)
     if not match:
         return None
     return raw[match.end() :].strip()
 
 
-def message_has_reel_prefix(text: str) -> bool:
-    return text_after_reel_prefix(text) is not None
+def message_has_reel_prefix(text: str, cfg: AppConfig | None = None) -> bool:
+    return text_after_reel_prefix(text, cfg) is not None
+
+
+def message_has_prefix(text: str, cfg: AppConfig | None = None) -> bool:
+    return message_has_reel_prefix(text, cfg)
 
 
 def force_prefixes(cfg: AppConfig) -> tuple[str, ...]:
-    """The only command prefix. ``cfg`` is unused; the token is fixed."""
-    del cfg
-    return (REEL_PREFIX,)
+    """Configured command prefix (default ``!reel``)."""
+    return (configured_prefix(cfg),)
 
 
 def parse_command(body: str, cfg: AppConfig) -> tuple[str, list[str]] | None:
-    """Parse a command only when the body contains the ``!reel`` token."""
-    del cfg
+    """Parse a command only when the body contains the configured prefix token."""
     text = (body or "").strip()
     if not text:
         return None
 
-    rest = text_after_reel_prefix(text)
+    rest = text_after_reel_prefix(text, cfg)
     if rest is None:
         return None
     if not rest:
@@ -178,6 +194,15 @@ def parse_command(body: str, cfg: AppConfig) -> tuple[str, list[str]] | None:
     return cmd, args
 
 
+def ytdlp_version() -> str:
+    try:
+        import yt_dlp.version
+
+        return str(yt_dlp.version.__version__)
+    except Exception:
+        return "unknown"
+
+
 async def handle_command(
     bot: MatrixGateway,
     cfg: AppConfig,
@@ -189,15 +214,23 @@ async def handle_command(
     cmd: str,
     args: list[str],
     is_direct: bool,
+    thread_root_event_id: str | None = None,
 ) -> bool:
     admin = is_admin(sender, cfg)
 
+    async def reply_text(body: str, formatted_body: str | None = None) -> None:
+        await bot.send_text(
+            room_id,
+            body,
+            reply_to_event_id=event_id,
+            formatted_body=formatted_body,
+            thread_root_event_id=thread_root_event_id,
+        )
+
     if cmd in ADMIN_COMMANDS and not admin:
         if is_direct or cmd == "grab":
-            await bot.send_text(
-                room_id,
+            await reply_text(
                 "Not authorized. Add your MXID to bot.admin_users in config.yaml.",
-                reply_to_event_id=event_id,
             )
             return True
         return False
@@ -205,41 +238,35 @@ async def handle_command(
     if cmd not in PUBLIC_COMMANDS and cmd not in ADMIN_COMMANDS:
         return False
 
-    reply = event_id
-
     if cmd == "help":
-        plain, formatted = format_help_text()
-        await bot.send_text(
-            room_id,
-            plain,
-            reply_to_event_id=reply,
-            formatted_body=formatted,
-        )
+        plain, formatted = format_help_text(configured_prefix(cfg))
+        await reply_text(plain, formatted)
         return True
 
     if cmd == "ping":
-        await bot.send_text(room_id, "pong", reply_to_event_id=reply)
+        await reply_text("pong")
         return True
 
     if cmd == "whoami":
         plain = f"you={sender}\nbot={bot.user_id}\nadmin={admin}"
-        await bot.send_text(
-            room_id,
-            plain,
-            reply_to_event_id=reply,
-            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
-        )
+        await reply_text(plain, f"<pre><code>{html.escape(plain)}</code></pre>")
         return True
 
     if cmd == "status":
         cookies = cfg.cookies_file_path
         allowed = effective_allowed_rooms(cfg, store)
+        upload_limit = getattr(bot, "max_upload_bytes", None)
         rows = [
             ("bot", bot.user_id),
             ("homeserver", cfg.homeserver.address),
             ("domain", cfg.homeserver.domain),
             ("appservice.id", cfg.appservice.id),
-            ("downloader", "yt-dlp"),
+            ("command_prefix", configured_prefix(cfg)),
+            ("downloader", f"yt-dlp {ytdlp_version()}"),
+            (
+                "upload_limit",
+                f"{upload_limit} bytes" if upload_limit else "homeserver default",
+            ),
             (
                 "convert",
                 (
@@ -263,12 +290,7 @@ async def handle_command(
         ]
         key_w = max(len(k) for k, _ in rows)
         plain = "\n".join(f"{k.ljust(key_w)}  {v}" for k, v in rows)
-        await bot.send_text(
-            room_id,
-            plain,
-            reply_to_event_id=reply,
-            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
-        )
+        await reply_text(plain, f"<pre><code>{html.escape(plain)}</code></pre>")
         return True
 
     if cmd == "rooms":
@@ -277,7 +299,7 @@ async def handle_command(
             await bot.refresh_joined_rooms()  # type: ignore[attr-defined]
         rooms = bot.joined_room_ids()
         if not rooms:
-            await bot.send_text(room_id, "No joined rooms yet.", reply_to_event_id=reply)
+            await reply_text("No joined rooms yet.")
             return True
         allowed = set(effective_allowed_rooms(cfg, store))
         lines = []
@@ -287,87 +309,66 @@ async def handle_command(
                 mark = " [allowed]" if rid in allowed else " [blocked by allow-list]"
             lines.append(f"{rid}{mark}")
         plain = "Joined rooms:\n" + "\n".join(lines)
-        await bot.send_text(
-            room_id,
-            plain,
-            reply_to_event_id=reply,
-            formatted_body=f"<pre><code>{html.escape(plain)}</code></pre>",
-        )
+        await reply_text(plain, f"<pre><code>{html.escape(plain)}</code></pre>")
         return True
+
+    prefix = configured_prefix(cfg)
 
     if cmd == "allow":
         if not args:
-            await bot.send_text(
-                room_id,
-                "Usage: !reel allow <room_id> | !reel allow clear",
-                reply_to_event_id=reply,
-            )
+            await reply_text(f"Usage: {prefix} allow <room_id> | {prefix} allow clear")
             return True
         if args[0].lower() == "clear":
             store.update(allowed_rooms=[])
-            await bot.send_text(
-                room_id,
-                "Allow-list cleared. All invited rooms are active.",
-                reply_to_event_id=reply,
-            )
+            await reply_text("Allow-list cleared. All invited rooms are active.")
             return True
         rid = args[0]
         current = effective_allowed_rooms(cfg, store)
         if rid not in current:
             current.append(rid)
         store.update(allowed_rooms=current)
-        await bot.send_text(room_id, f"Allow-list now: {current}", reply_to_event_id=reply)
+        await reply_text(f"Allow-list now: {current}")
         return True
 
     if cmd == "deny":
         if not args:
-            await bot.send_text(room_id, "Usage: !reel deny <room_id>", reply_to_event_id=reply)
+            await reply_text(f"Usage: {prefix} deny <room_id>")
             return True
         rid = args[0]
         current = [r for r in effective_allowed_rooms(cfg, store) if r != rid]
         store.update(allowed_rooms=current)
-        await bot.send_text(
-            room_id,
-            f"Removed {rid}. Allow-list now: {current or '(all invited)'}",
-            reply_to_event_id=reply,
-        )
+        await reply_text(f"Removed {rid}. Allow-list now: {current or '(all invited)'}")
         return True
 
     if cmd == "auto":
         if not args or args[0].lower() not in ("on", "off"):
-            await bot.send_text(room_id, "Usage: !reel auto on|off", reply_to_event_id=reply)
+            await reply_text(f"Usage: {prefix} auto on|off")
             return True
         on = args[0].lower() == "on"
         store.update(auto_download=on)
-        await bot.send_text(room_id, f"auto_download = {on}", reply_to_event_id=reply)
+        await reply_text(f"auto_download = {on}")
         return True
 
     if cmd == "notify":
         if not args or args[0].lower() not in ("on", "off"):
-            await bot.send_text(room_id, "Usage: !reel notify on|off", reply_to_event_id=reply)
+            await reply_text(f"Usage: {prefix} notify on|off")
             return True
         on = args[0].lower() == "on"
         store.update(notify_on_failure=on)
-        await bot.send_text(
-            room_id, f"notify_on_failure = {on}", reply_to_event_id=reply
-        )
+        await reply_text(f"notify_on_failure = {on}")
         return True
 
     if cmd == "caption":
         if not args:
-            await bot.send_text(
-                room_id,
-                "Usage: !reel caption <text> | !reel caption clear",
-                reply_to_event_id=reply,
-            )
+            await reply_text(f"Usage: {prefix} caption <text> | {prefix} caption clear")
             return True
         if args[0].lower() == "clear":
             store.update(success_caption="")
-            await bot.send_text(room_id, "caption cleared", reply_to_event_id=reply)
+            await reply_text("caption cleared")
             return True
         text = " ".join(args)
         store.update(success_caption=text)
-        await bot.send_text(room_id, f"caption = {text!r}", reply_to_event_id=reply)
+        await reply_text(f"caption = {text!r}")
         return True
 
     if cmd == "grab":
@@ -384,7 +385,7 @@ def grab_urls_from_command(
     from reelgrab.urls import find_matching_urls
 
     rest = " ".join(args).strip() or body
-    after = text_after_reel_prefix(rest)
+    after = text_after_reel_prefix(rest, cfg)
     if after is not None:
         rest = after
     urls = find_matching_urls(rest, cfg.url_patterns)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import mimetypes
 import time
@@ -13,13 +15,37 @@ from urllib.parse import quote
 
 import aiofiles
 import aiohttp
+import yaml
 
-from reelgrab.appservice import text_body_from_event
+from reelgrab.appservice import AppserviceNotReady, text_body_from_event
 from reelgrab.config import AppConfig
+from reelgrab.matrix_content import build_video_content, relates_to
+from reelgrab.messages import (
+    is_edit,
+    is_historical,
+    is_reply,
+    message_is_actionable,
+    strip_reply_fallback,
+    thread_root_id,
+)
+from reelgrab.urls import find_matching_urls
 
 log = logging.getLogger("reelgrab.matrix")
 
 MessageHandler = Callable[..., Awaitable[None]]
+
+REACT_WORKING = "⏳"
+REACT_DONE = "✅"
+REACT_FAILED = "❌"
+
+_MEDIA_CONFIG_PATHS = (
+    "/_matrix/client/v1/media/config",
+    "/_matrix/media/v3/config",
+)
+
+
+class HomeserverUnavailable(RuntimeError):
+    """The homeserver did not answer. Startup backs off and tries again."""
 
 
 class MatrixGateway(Protocol):
@@ -39,7 +65,10 @@ class MatrixGateway(Protocol):
         path: Path,
         *,
         reply_to_event_id: str | None = None,
+        thread_root_event_id: str | None = None,
         caption: str | None = None,
+        filename: str | None = None,
+        formatted_body: str | None = None,
         mime: str | None = None,
         size: int | None = None,
         duration_ms: int | None = None,
@@ -47,6 +76,10 @@ class MatrixGateway(Protocol):
         height: int | None = None,
         thumbnail_mxc: str | None = None,
         thumbnail_path: Path | None = None,
+        thumbnail_width: int | None = None,
+        thumbnail_height: int | None = None,
+        thumbnail_size: int | None = None,
+        blurhash: str | None = None,
     ) -> None: ...
 
     async def send_text(
@@ -55,8 +88,13 @@ class MatrixGateway(Protocol):
         body: str,
         *,
         reply_to_event_id: str | None = None,
+        thread_root_event_id: str | None = None,
         formatted_body: str | None = None,
     ) -> None: ...
+
+    async def send_reaction(self, room_id: str, event_id: str, key: str) -> str: ...
+
+    async def redact_event(self, room_id: str, event_id: str) -> None: ...
 
 
 class MatrixBot:
@@ -67,6 +105,8 @@ class MatrixBot:
         self._session: aiohttp.ClientSession | None = None
         self._message_handler: MessageHandler | None = None
         self._ready: bool = False
+        self._started_ms: int = 0
+        self.max_upload_bytes: int | None = None
         # room_id -> set of joined member MXIDs (best-effort from push + API)
         self._members: dict[str, set[str]] = {}
         self._joined: set[str] = set()
@@ -111,16 +151,40 @@ class MatrixBot:
                 "appservice.as_token missing — run once to generate config/registration"
             )
 
+        self._started_ms = int(time.time() * 1000)
         self._session = aiohttp.ClientSession(
             headers=self._auth_headers(),
             timeout=aiohttp.ClientTimeout(total=120),
         )
         log.info("appservice auth as %s @ %s", self.user_id, self.cfg.homeserver.address)
+        delay = 1.0
+        while True:
+            try:
+                await self._startup_once()
+                self._ready = True
+                log.info(
+                    "matrix client ready as %s (joined=%d)", self.user_id, len(self._joined)
+                )
+                return
+            except HomeserverUnavailable as exc:
+                self._ready = False
+                log.warning("homeserver not reachable (%s); retrying in %.0fs", exc, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
+            except Exception:
+                self._ready = False
+                if self._session is not None:
+                    await self._session.close()
+                    self._session = None
+                raise
+
+    async def _startup_once(self) -> None:
+        await self._request("GET", "/_matrix/client/versions")
+        log.info("homeserver reachable at %s", self.cfg.homeserver.address)
         await self._appservice_ensure_registered()
+        await self._load_media_config()
         await self._ensure_profile()
         await self._refresh_joined_rooms()
-        self._ready = True
-        log.info("matrix client ready as %s (joined=%d)", self.user_id, len(self._joined))
 
     async def close(self) -> None:
         self._ready = False
@@ -143,20 +207,27 @@ class MatrixBot:
             raise RuntimeError("client not started")
         url = self._hs(path)
         hdrs = dict(headers or {})
-        async with self._session.request(
-            method, url, json=json, data=data, headers=hdrs, params=params
-        ) as resp:
-            body: Any
-            if expect_json:
-                try:
-                    body = await resp.json(content_type=None)
-                except Exception:
-                    body = {"raw": await resp.text()}
-            else:
-                body = await resp.read()
-            if resp.status >= 400:
-                raise RuntimeError(f"{method} {path} -> {resp.status}: {body}")
-            return body
+        try:
+            async with self._session.request(
+                method, url, json=json, data=data, headers=hdrs, params=params
+            ) as resp:
+                body: Any
+                if expect_json:
+                    try:
+                        body = await resp.json(content_type=None)
+                    except Exception:
+                        body = {"raw": await resp.text()}
+                else:
+                    body = await resp.read()
+                if resp.status in (502, 503, 504):
+                    raise HomeserverUnavailable(f"{method} {path} -> {resp.status}")
+                if resp.status >= 400:
+                    raise RuntimeError(f"{method} {path} -> {resp.status}: {body}")
+                return body
+        except HomeserverUnavailable:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+            raise HomeserverUnavailable(f"{method} {path} failed: {exc}") from exc
 
     async def _appservice_ensure_registered(self) -> None:
         localpart = self.cfg.appservice.bot.username
@@ -170,16 +241,45 @@ class MatrixBot:
                 },
             )
             log.info("appservice user registered: %s", data.get("user_id"))
+        except HomeserverUnavailable:
+            raise
         except RuntimeError as exc:
             msg = str(exc)
-            if "M_USER_IN_USE" in msg or "M_USER_EXISTS" in msg or "400" in msg:
-                # Already exists is fine; other 400s logged below.
-                if "M_USER_IN_USE" in msg or "M_USER_EXISTS" in msg:
-                    log.debug("appservice user already exists")
-                    return
+            if "M_USER_IN_USE" in msg or "M_USER_EXISTS" in msg:
+                log.debug("appservice user already exists")
+                return
             log.warning("appservice register attempt failed: %s", exc)
         except Exception as exc:
             log.warning("appservice register attempt failed: %s", exc)
+
+    async def _load_media_config(self) -> None:
+        """Read ``m.upload.size`` so encodes can fit the homeserver limit."""
+        configured = int(self.cfg.download.max_upload_bytes or 0)
+        reported: int | None = None
+        for path in _MEDIA_CONFIG_PATHS:
+            try:
+                data = await self._request("GET", path)
+            except HomeserverUnavailable:
+                raise
+            except Exception as exc:
+                log.debug("media config %s failed: %s", path, exc)
+                continue
+            size = data.get("m.upload.size") if isinstance(data, dict) else None
+            if size:
+                try:
+                    reported = int(size)
+                except (TypeError, ValueError):
+                    reported = None
+                if reported:
+                    break
+        if configured and reported:
+            self.max_upload_bytes = min(configured, reported)
+        else:
+            self.max_upload_bytes = configured or reported
+        if self.max_upload_bytes:
+            log.info("homeserver upload limit %s bytes", self.max_upload_bytes)
+        else:
+            log.info("homeserver upload limit unknown; quality stepping disabled")
 
     async def _ensure_profile(self) -> None:
         uid = quote(self.user_id, safe="")
@@ -192,12 +292,55 @@ class MatrixBot:
                     json={"displayname": name},
                 )
                 log.info("display name set to %r", name)
+            except HomeserverUnavailable:
+                raise
             except Exception as exc:
                 log.debug("set_displayname failed (may be ok): %s", exc)
         await self._ensure_avatar()
 
+    def _avatar_state_path(self) -> Path:
+        return self.cfg.data_dir / "avatar_state.yaml"
+
+    def _read_avatar_state(self) -> dict[str, Any]:
+        path = self._avatar_state_path()
+        if not path.is_file():
+            return {}
+        try:
+            with path.open(encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_avatar_state(self, digest: str, mxc: str) -> None:
+        path = self._avatar_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump({"sha256": digest, "mxc": mxc}, fh, sort_keys=True)
+
+    async def _profile_avatar_url(self) -> str | None:
+        uid = quote(self.user_id, safe="")
+        try:
+            data = await self._request("GET", f"/_matrix/client/v3/profile/{uid}")
+        except HomeserverUnavailable:
+            raise
+        except Exception as exc:
+            log.debug("get profile failed: %s", exc)
+            return None
+        if isinstance(data, dict):
+            return data.get("avatar_url") or None
+        return None
+
+    async def _set_avatar_url(self, mxc: str) -> None:
+        uid = quote(self.user_id, safe="")
+        await self._request(
+            "PUT",
+            f"/_matrix/client/v3/profile/{uid}/avatar_url",
+            json={"avatar_url": mxc},
+        )
+
     async def _ensure_avatar(self) -> None:
-        """Upload configured avatar and set profile avatar_url (mxc:// on this HS)."""
+        """Upload the avatar only when the file contents changed."""
         path = self.cfg.avatar_path()
         if path is None:
             return
@@ -205,14 +348,23 @@ class MatrixBot:
             log.warning("avatar file missing (%s); skipping", path)
             return
         try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            saved = self._read_avatar_state()
+            saved_mxc = str(saved.get("mxc") or "")
+            if saved.get("sha256") == digest and saved_mxc:
+                current = await self._profile_avatar_url()
+                if current == saved_mxc:
+                    log.info("avatar unchanged (%s)", digest[:12])
+                    return
+                await self._set_avatar_url(saved_mxc)
+                log.info("avatar profile restored from cache %s", saved_mxc)
+                return
             mxc = await self.upload_media(path)
-            uid = quote(self.user_id, safe="")
-            await self._request(
-                "PUT",
-                f"/_matrix/client/v3/profile/{uid}/avatar_url",
-                json={"avatar_url": mxc},
-            )
+            await self._set_avatar_url(mxc)
+            self._write_avatar_state(digest, mxc)
             log.info("avatar set from %s -> %s", path, mxc)
+        except HomeserverUnavailable:
+            raise
         except Exception as exc:
             log.warning("set_avatar failed (may be ok): %s", exc)
 
@@ -221,6 +373,8 @@ class MatrixBot:
             data = await self._request("GET", "/_matrix/client/v3/joined_rooms")
             rooms = data.get("joined_rooms") or []
             self._joined = set(rooms)
+        except HomeserverUnavailable:
+            raise
         except Exception as exc:
             log.warning("joined_rooms refresh failed: %s", exc)
 
@@ -236,8 +390,6 @@ class MatrixBot:
             log.warning("join %s failed: %s", room_id, exc)
 
     async def _ensure_member_cache(self, room_id: str, *, force: bool = False) -> None:
-        # After invite/join we often only know ourselves; refresh until we have a
-        # complete picture (needed for is_direct detection).
         cached = self._members.get(room_id) or set()
         if not force and len(cached) >= 2:
             return
@@ -257,6 +409,8 @@ class MatrixBot:
 
     async def handle_appservice_events(self, events: list[dict[str, Any]]) -> None:
         """Process one transaction batch from the homeserver."""
+        if not self._ready:
+            raise AppserviceNotReady("homeserver client is not ready")
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -298,6 +452,16 @@ class MatrixBot:
         if sender == self.user_id:
             return
 
+        if is_edit(event):
+            log.debug("ignore edit event=%s room=%s", event.get("event_id"), room_id)
+            return
+
+        if self.cfg.bot.ignore_history and self._started_ms and is_historical(
+            event, started_ms=self._started_ms
+        ):
+            log.debug("ignore historical event=%s room=%s", event.get("event_id"), room_id)
+            return
+
         body = text_body_from_event(event)
         if body is None:
             content = event.get("content") or {}
@@ -308,23 +472,37 @@ class MatrixBot:
             )
             return
 
+        reply = is_reply(event)
+        if reply:
+            body = strip_reply_fallback(body)
+
+        # Gate before any member fetch or log line. Unrelated chatter stays quiet.
+        if not message_is_actionable(body, self.cfg):
+            return
+
         event_id = event.get("event_id") or ""
         await self._ensure_member_cache(room_id, force=True)
-        is_direct = self.is_direct_room(room_id)
-        log.info(
-            "message room=%s sender=%s direct=%s body=%r",
-            room_id,
-            sender,
-            is_direct,
-            (body or "")[:80],
-        )
+        direct = self.is_direct_room(room_id)
+        urls = find_matching_urls(body, self.cfg.url_patterns)
+        if urls:
+            log.info(
+                "link room=%s sender=%s direct=%s urls=%s",
+                room_id,
+                sender,
+                direct,
+                urls,
+            )
+        else:
+            log.info("command room=%s sender=%s direct=%s", room_id, sender, direct)
 
         await self._message_handler(
             room_id=room_id,
             event_id=event_id,
             sender=sender,
             body=body,
-            is_direct=is_direct,
+            is_direct=direct,
+            is_reply=reply,
+            thread_root_event_id=thread_root_id(event),
         )
 
     async def _handle_member(self, event: dict[str, Any]) -> None:
@@ -332,7 +510,6 @@ class MatrixBot:
         state_key = event.get("state_key") or ""
         content = event.get("content") or {}
         membership = content.get("membership") or ""
-        # Matrix DM invites often set is_direct on the invite content.
         if content.get("is_direct") and state_key == self.user_id:
             self._direct_rooms.add(room_id)
 
@@ -341,7 +518,6 @@ class MatrixBot:
             members.add(state_key)
             if state_key == self.user_id:
                 self._joined.add(room_id)
-                # Pull full member list so is_direct works immediately.
                 await self._ensure_member_cache(room_id, force=True)
         elif membership in ("leave", "ban"):
             members.discard(state_key)
@@ -364,7 +540,6 @@ class MatrixBot:
             mime = mime or "application/octet-stream"
 
         size = path.stat().st_size
-        # CS media upload (authenticated)
         url = self._hs("/_matrix/media/v3/upload")
         params = {"filename": path.name}
         headers = {
@@ -373,20 +548,30 @@ class MatrixBot:
         }
         async with aiofiles.open(path, "rb") as f:
             data = await f.read()
-        async with self._session.post(
-            url, params=params, data=data, headers=headers
-        ) as resp:
-            body = await resp.json(content_type=None)
-            if resp.status >= 400:
-                # Fallback older path
-                if resp.status == 404:
-                    return await self._upload_r0(path, mime, data)
-                raise RuntimeError(f"upload failed {resp.status}: {body}")
-            mxc = body.get("content_uri")
-            if not mxc:
-                raise RuntimeError(f"upload missing content_uri: {body}")
-            log.info("uploaded %s -> %s (%s bytes)", path.name, mxc, size)
-            return mxc
+        try:
+            async with self._session.post(
+                url, params=params, data=data, headers=headers
+            ) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status in (502, 503, 504):
+                    raise HomeserverUnavailable(f"upload -> {resp.status}")
+                if resp.status >= 400:
+                    if resp.status == 404:
+                        return await self._upload_r0(path, mime, data)
+                    if resp.status == 413:
+                        raise RuntimeError(
+                            f"upload failed 413: file is {size} bytes, over the homeserver limit"
+                        )
+                    raise RuntimeError(f"upload failed {resp.status}: {body}")
+                mxc = body.get("content_uri")
+                if not mxc:
+                    raise RuntimeError(f"upload missing content_uri: {body}")
+                log.info("uploaded %s -> %s (%s bytes)", path.name, mxc, size)
+                return mxc
+        except HomeserverUnavailable:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+            raise HomeserverUnavailable(f"upload failed: {exc}") from exc
 
     async def _upload_r0(self, path: Path, mime: str, data: bytes) -> str:
         assert self._session
@@ -411,7 +596,10 @@ class MatrixBot:
         path: Path,
         *,
         reply_to_event_id: str | None = None,
+        thread_root_event_id: str | None = None,
         caption: str | None = None,
+        filename: str | None = None,
+        formatted_body: str | None = None,
         mime: str | None = None,
         size: int | None = None,
         duration_ms: int | None = None,
@@ -419,6 +607,10 @@ class MatrixBot:
         height: int | None = None,
         thumbnail_mxc: str | None = None,
         thumbnail_path: Path | None = None,
+        thumbnail_width: int | None = None,
+        thumbnail_height: int | None = None,
+        thumbnail_size: int | None = None,
+        blurhash: str | None = None,
     ) -> None:
         path = Path(path)
         if size is None:
@@ -426,45 +618,30 @@ class MatrixBot:
         if not mime:
             mime, _ = mimetypes.guess_type(str(path))
             mime = mime or "video/mp4"
+        if not filename:
+            filename = path.name or "video.mp4"
+        body = caption or filename
+        if thumbnail_size is None and thumbnail_path and thumbnail_path.is_file():
+            thumbnail_size = thumbnail_path.stat().st_size
 
-        is_video = mime.startswith("video/")
-        body = caption or path.name
-        info: dict[str, Any] = {"size": size, "mimetype": mime}
-        if duration_ms is not None and duration_ms > 0:
-            info["duration"] = int(duration_ms)
-        if width:
-            info["w"] = int(width)
-        if height:
-            info["h"] = int(height)
-        if thumbnail_mxc:
-            info["thumbnail_url"] = thumbnail_mxc
-            thumb_info: dict[str, Any] = {"mimetype": "image/jpeg"}
-            if thumbnail_path and thumbnail_path.is_file():
-                thumb_info["size"] = thumbnail_path.stat().st_size
-            if width:
-                # Approximate thumb dimensions (long edge ~640 from generator)
-                tw, th = int(width), int(height or width)
-                if max(tw, th) > 640:
-                    scale = 640 / max(tw, th)
-                    tw = max(1, int(tw * scale))
-                    th = max(1, int(th * scale))
-                thumb_info["w"] = tw
-                thumb_info["h"] = th
-            info["thumbnail_info"] = thumb_info
-
-        content: dict[str, Any] = {
-            "body": body,
-            "info": info,
-            "msgtype": "m.video" if is_video else "m.file",
-            "url": mxc,
-        }
-        if not is_video:
-            content["filename"] = path.name
-        if reply_to_event_id:
-            content["m.relates_to"] = {
-                "m.in_reply_to": {"event_id": reply_to_event_id}
-            }
-
+        content = build_video_content(
+            mxc=mxc,
+            body=body,
+            filename=filename,
+            mime=mime,
+            size=size,
+            duration_ms=duration_ms,
+            width=width,
+            height=height,
+            thumbnail_mxc=thumbnail_mxc,
+            thumbnail_size=thumbnail_size,
+            thumbnail_width=thumbnail_width,
+            thumbnail_height=thumbnail_height,
+            blurhash=blurhash,
+            formatted_body=formatted_body,
+            reply_to_event_id=reply_to_event_id,
+            thread_root_event_id=thread_root_event_id,
+        )
         await self._room_send(room_id, content)
         log.info(
             "sent %s to %s size=%s duration_ms=%s thumb=%s",
@@ -481,27 +658,66 @@ class MatrixBot:
         body: str,
         *,
         reply_to_event_id: str | None = None,
+        thread_root_event_id: str | None = None,
         formatted_body: str | None = None,
     ) -> None:
         content: dict[str, Any] = {"msgtype": "m.notice", "body": body}
         if formatted_body:
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = formatted_body
-        if reply_to_event_id:
-            content["m.relates_to"] = {
-                "m.in_reply_to": {"event_id": reply_to_event_id}
-            }
+        relation = relates_to(
+            reply_to_event_id=reply_to_event_id,
+            thread_root_event_id=thread_root_event_id,
+        )
+        if relation:
+            content["m.relates_to"] = relation
         await self._room_send(room_id, content)
         log.info("sent notice to %s (%d chars)", room_id, len(body))
+
+    async def send_reaction(self, room_id: str, event_id: str, key: str) -> str:
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": event_id,
+                "key": key,
+            }
+        }
+        sent = await self._room_send(room_id, content, event_type="m.reaction")
+        return sent or ""
+
+    async def redact_event(self, room_id: str, event_id: str, reason: str = "") -> None:
+        if not event_id:
+            return
+        txn_id = f"{int(time.time() * 1000)}{uuid.uuid4().hex[:8]}"
+        rid = quote(room_id, safe="")
+        eid = quote(event_id, safe="")
+        payload: dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+        await self._request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{rid}/redact/{eid}/{txn_id}",
+            json=payload,
+        )
 
     async def refresh_joined_rooms(self) -> None:
         await self._refresh_joined_rooms()
 
-    async def _room_send(self, room_id: str, content: dict[str, Any]) -> None:
+    async def _room_send(
+        self,
+        room_id: str,
+        content: dict[str, Any],
+        *,
+        event_type: str = "m.room.message",
+    ) -> str:
         txn_id = f"{int(time.time() * 1000)}{uuid.uuid4().hex[:8]}"
         rid = quote(room_id, safe="")
-        await self._request(
+        etype = quote(event_type, safe="")
+        data = await self._request(
             "PUT",
-            f"/_matrix/client/v3/rooms/{rid}/send/m.room.message/{txn_id}",
+            f"/_matrix/client/v3/rooms/{rid}/send/{etype}/{txn_id}",
             json=content,
         )
+        if isinstance(data, dict):
+            return str(data.get("event_id") or "")
+        return ""

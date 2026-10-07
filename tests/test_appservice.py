@@ -34,6 +34,31 @@ class TestTextBody(unittest.TestCase):
         )
         self.assertEqual(body, "hello")
 
+    def test_ignores_notice(self) -> None:
+        body = text_body_from_event(
+            {
+                "type": "m.room.message",
+                "content": {
+                    "msgtype": "m.notice",
+                    "body": "https://instagram.com/reel/ABC/",
+                },
+            }
+        )
+        self.assertIsNone(body)
+
+    def test_does_not_append_reply_html(self) -> None:
+        body = text_body_from_event(
+            {
+                "type": "m.room.message",
+                "content": {
+                    "msgtype": "m.text",
+                    "body": "hello",
+                    "formatted_body": "<mx-reply>https://instagram.com/reel/ABC/</mx-reply>hello",
+                },
+            }
+        )
+        self.assertEqual(body, "hello")
+
     def test_ignores_video(self) -> None:
         body = text_body_from_event(
             {

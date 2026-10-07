@@ -68,6 +68,8 @@ data/                      # bind-mounted to /data in the container
   config.yaml              # you edit this
   registration.yaml        # generated; give to Synapse
   runtime_state.yaml       # DM toggles (allow-list, auto, …)
+  media_cache.sqlite       # URL → uploaded mxc (survives restarts)
+  avatar_state.yaml        # last uploaded avatar hash (skips repeat uploads)
   cookies.txt              # optional site cookies (Netscape format)
   downloads/               # temp media
 ```
@@ -122,6 +124,8 @@ namespaces:
 - Bot MXID: `@<appservice.bot.username>:<homeserver.domain>`
 - After changing `registration.yaml`, restart the homeserver.
 
+`GET /health` is open (no `hs_token`). It returns 503 until the homeserver answers and 200 once the bot is ready. The image `HEALTHCHECK` calls `http://127.0.0.1:29399/health`. If the homeserver is down at start, the process keeps retrying with backoff instead of logging ready and idling.
+
 ## Bot avatar (profile picture)
 
 Matrix does **not** ship avatar bytes inside the profile event. The profile stores an **`mxc://` media URI**; other homeservers fetch that media from yours over federation.
@@ -160,17 +164,23 @@ The bot stays quiet unless a message contains the exact token `!reel` or a suppo
 |---------|--------|
 | `!reel help` | Command list |
 | `!reel ping` | pong |
-| `!reel status` | runtime + cookies + allow-list |
+| `!reel status` | runtime, cookies, yt-dlp version, upload limit |
 | `!reel whoami` | your MXID |
 | `!reel rooms` | joined room IDs |
 | `!reel allow <room_id>` / `!reel allow clear` | allow-list |
 | `!reel deny <room_id>` | remove from allow-list |
 | `!reel auto on\|off` | auto-download |
-| `!reel notify on\|off` | failure notices (traceback) |
-| `!reel caption <text>` | optional m.video body (empty = filename) |
+| `!reel notify on\|off` | one-line failure notice |
+| `!reel caption <text>` | caption override (`caption clear` = metadata) |
 | `!reel <url>` | force one download (any http URL; admin) |
 
-On success the bot posts **only** the `m.video` (no “Downloading…” / “Grabbed…” notices). On failure it posts an `m.notice` with the error traceback when `notify_on_failure` is on. Preventing mautrix bridges from relaying that video back to the remote chat is a **bridge** setting (relay mode / filters), not something a third-party appservice can reliably force.
+`bot.command_prefix` is the listen token (default `!reel`). It must be a whole word.
+
+While a grab is in progress the bot reacts ⏳ on the source message, then ✅ or ❌. On success it posts the `m.video` with a filename and a caption (`@uploader: title · source url`, or `bot.success_caption` when that is set). On failure it posts one short line when `notify_on_failure` is on. The Python traceback stays in the log.
+
+A link sent inside a thread is answered inside that thread. Edits, `m.notice` messages, and the quoted part of a reply are ignored. With `bot.ignore_history: true` (the default), events older than this process start are skipped, so a backlog replay after downtime does not re-grab old links.
+
+The same URL is uploaded once. Later sends, including after a restart and in other rooms, reuse that `mxc://` from `media_cache.sqlite`. The same room will not post it again until `dedupe_ttl_seconds` has passed.
 
 ## Config reference
 
@@ -180,15 +190,18 @@ Relative paths resolve against the **data directory**.
 
 ## Supported links (defaults)
 
-Short-form only (not full long-form pages):
+Defaults (YouTube `watch?v=` pages are not included; `!reel <url>` can still fetch any other http URL, subject to the duration limit):
 
 | Site | Matched URL shapes |
 |------|--------------------|
-| Instagram | `/reel/`, `/reels/`, `instagr.am`, `l.instagram.com` |
+| Instagram | `/reel/`, `/reels/`, `/p/`, `/tv/`, `instagr.am`, `l.instagram.com` |
 | YouTube | `/shorts/` only (not `watch?v=`) |
 | Facebook | `/reel/`, `/reels/`, `/share/r/`, `fb.watch` |
 | TikTok | `/@…/video/…`, `vm.tiktok.com`, `vt.tiktok.com`, `/t/` |
-| Twitter/X | `video.twimg.com/amplify_video/…/vid/…/*.mp4` (direct CDN MP4, including `?tag=N`) |
+| Twitter/X | status permalinks (`x.com` / `twitter.com` `…/status/123`) and `video.twimg.com/amplify_video/…/*.mp4` |
+| Threads | `threads.net` / `threads.com` `/@…/post/…` |
+| Bluesky | `bsky.app/profile/…/post/…` |
+| Reddit | `reddit.com/r/…/comments/…`, `v.redd.it`, `redd.it` |
 
 Override or extend via `urls.url_patterns` in `config.yaml`.
 
@@ -198,27 +211,15 @@ Export Netscape `cookies.txt` into `data/cookies.txt` when a site requires a ses
 
 ## Download
 
-Instagram, TikTok, Shorts, and the other short-form hosts are downloaded **in-process** with **yt-dlp**. `video.twimg.com` amplify_video links are already MP4 files, so those are fetched directly over HTTP (redirects must stay on `video.twimg.com`) and then follow the same convert path. After download, **ffmpeg** re-encodes to a mobile-friendly **H.264 + AAC MP4**. Override under `download.convert` in `config.yaml`.
+Instagram, TikTok, Shorts, and the other hosts are downloaded **in-process** with **yt-dlp**. The default format selector prefers H.264 + AAC. An existing config that still says `format: bv*+ba/b` is treated as that selector; any other format string is used as written. `video.twimg.com` amplify_video links are already MP4 files, so those are fetched directly over HTTP (redirects must stay on `video.twimg.com`).
 
-```yaml
-download:
-  convert:
-    enabled: true
-    force: true          # false = skip when already H.264/AAC/yuv420p MP4
-    video_codec: libx264
-    audio_codec: aac
-    audio_bitrate: 128k
-    video_preset: veryfast
-    video_crf: 23
-    pixel_format: yuv420p
-    profile: baseline
-    level: "3.1"
-    max_width: 1280
-    max_height: 1280
-    movflags: "+faststart"
-    extra_args: []       # e.g. ["-bf", "0"]
-    timeout_seconds: 600
-```
+ffmpeg re-encodes only when the file is not already H.264 + AAC + yuv420p in MP4 (`download.convert.force: false` on new configs). A re-encode uses High profile, CRF 26, and a bitrate cap. At startup the bot reads the homeserver upload limit (`m.upload.size`) and, if the file is larger, steps quality down instead of failing the upload.
+
+`download.max_duration_seconds` (default 600) refuses longer videos. `0` disables the guard. A post with no video gets a short failure line.
+
+An existing `config.yaml` keeps the convert values it already has (`force: true`, baseline, CRF 23, and so on). New keys (`max_bitrate`, `max_duration_seconds`, `max_upload_bytes`) use the defaults above when they are absent.
+
+`!reel status` prints the installed yt-dlp version. The Docker image bakes yt-dlp in at build time; the Docker workflow rebuilds the image every Monday so that version stays current.
 
 No external download container is required.
 
@@ -245,9 +246,11 @@ reelgrab/
   default_config.py    # documented default config.yaml
   appservice.py        # HS → bot transaction HTTP (mautrix-style)
   matrix_client.py     # as_token outbound CS API + event dispatch
+  matrix_content.py    # m.video content, captions, thread relations
   handlers.py          # pipeline
   commands.py          # DM admin commands
   downloader.py        # yt-dlp download + ffmpeg probe/thumbnail
+  media_cache.py       # URL → mxc sqlite cache
   urls.py
   state.py
   assets/icon.jpg      # default bot avatar (also images/icon.jpg in repo)

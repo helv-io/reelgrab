@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-07
+
+Matrix-side behavior for existing rooms. Appservice registration, tokens, and `url` are unchanged. A `config.yaml` that already sets convert / format / prefix values keeps those values.
+
+### Added
+
+- Status reactions on the source message: ⏳ while grabbing, then ✅ or ❌.
+- Media captions (Matrix `filename` + caption `body`): `@uploader: title · source url`. `bot.success_caption` still overrides that line. Thumbnail width/height follow the real JPEG (vertical video is 640×1138, not 360×640). Blurhash is included when Pillow and the `blurhash` package are installed.
+- SQLite cache (`bot.media_cache_file`, default `media_cache.sqlite`) of canonical URL → uploaded media. Repeats in other rooms, and after a restart, send immediately.
+- Link patterns for X/Twitter status permalinks, Instagram `/p/` and `/tv/`, Threads, Bluesky, and Reddit. Existing pattern lists pick these up at load time.
+- `download.max_duration_seconds` (default 600; `0` disables). Posts with no video fail with a short line.
+- yt-dlp version on `!reel status`. The Docker workflow rebuilds the image every Monday so the baked-in yt-dlp stays current.
+- Startup retry with backoff until the homeserver answers. `/health` is 503 until then and 200 when ready. The image has a Docker `HEALTHCHECK` on port 29399.
+- Avatar bytes are uploaded only when the file hash changes (`avatar_state.yaml`).
+
+### Changed
+
+- The bot checks for the command prefix or a supported URL before fetching room members or writing a log line. Logs contain the URL, not the message text.
+- Failure notices are one line (`Failed to grab media: …`). The traceback is logged, not posted.
+- Edits (`m.replace`), `m.notice`, and the quoted fallback of a reply are ignored. A link inside a thread is answered inside that thread.
+- `bot.ignore_history` (default true) skips events older than process start, so a backlog replay after downtime does not re-grab old links.
+- `bot.command_prefix` is the listen token. The default remains `!reel`.
+- New configs prefer an H.264/AAC yt-dlp format, skip re-encode when the file is already compatible (`convert.force: false`), and use High profile / CRF 26 / a bitrate cap when they do re-encode. The legacy format string `bv*+ba/b` selects H.264/AAC. The homeserver upload limit is read at startup; oversized files step down in quality instead of failing with HTTP 413.
+- Same-room dedupe still suppresses a second post inside `dedupe_ttl_seconds`. The cache is what avoids a second download.
+
+### Config compatibility
+
+Existing `config.yaml` files keep explicit `download.convert.*` and `download.format` values. Omitted new keys use the defaults in this release (`max_bitrate`, `max_duration_seconds`, `max_upload_bytes`, `media_cache_file`). Set `max_bitrate` to `""` to disable the cap. Set `ignore_history: false` to process a backlog.
+
 ## [0.5.0] - 2026-09-22
 
 Listen rules and Twitter/X amplify_video direct MP4s. Config file layout, appservice push, and the `helvio/reelgrab` image name are unchanged.
