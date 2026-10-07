@@ -27,7 +27,7 @@ AMPLIFY = (
 def _cfg(
     *,
     auto: bool = True,
-    prefix: str = "!grab",
+        prefix: str = "!reel",
     rooms: list[str] | None = None,
     admins: list[str] | None = None,
 ) -> AppConfig:
@@ -43,12 +43,6 @@ def _cfg(
 
 
 class FakeBot:
-    def __init__(self) -> None:
-        self.user_id = "@reelgrab:example.com"
-        self.sent_text: list[tuple] = []
-        self.sent_video: list[tuple] = []
-        self.uploads: list[Path] = []
-
     def joined_room_ids(self) -> list[str]:
         return ["!r:example.com"]
 
@@ -62,6 +56,21 @@ class FakeBot:
     async def send_text(self, room_id, body, **kwargs) -> None:
         # formatted_body optional
         self.sent_text.append((room_id, body, kwargs))
+
+    def __init__(self) -> None:
+        self.user_id = "@reelgrab:example.com"
+        self.sent_text: list[tuple] = []
+        self.sent_video: list[tuple] = []
+        self.uploads: list[Path] = []
+        self.reactions: list[tuple] = []
+        self.redactions: list[tuple] = []
+
+    async def send_reaction(self, room_id, event_id, key) -> str:
+        self.reactions.append((room_id, event_id, key))
+        return f"$react{len(self.reactions)}"
+
+    async def redact_event(self, room_id, event_id) -> None:
+        self.redactions.append((room_id, event_id))
 
 
 class TestHandlers(unittest.TestCase):
@@ -392,6 +401,7 @@ class TestHandlers(unittest.TestCase):
             self.assertEqual(len(bot.sent_text), 1)
             self.assertIn("Failed to grab media", bot.sent_text[0][1])
             self.assertIn("nope", bot.sent_text[0][1])
+            self.assertNotIn("Traceback", bot.sent_text[0][1])
 
     def test_handle_message_silent_failure_when_notify_off(self) -> None:
         from reelgrab.downloader import DownloadError
@@ -423,6 +433,143 @@ class TestHandlers(unittest.TestCase):
             asyncio.run(_run())
             self.assertEqual(bot.sent_text, [])
             self.assertEqual(bot.sent_video, [])
+
+    def test_reply_fallback_does_not_grab_quoted_link(self) -> None:
+        cfg = _cfg()
+        bot = FakeBot()
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+
+            async def _run() -> None:
+                with patch("reelgrab.handlers.download_url") as dl:
+                    await handle_message(
+                        bot,
+                        cfg,
+                        store,
+                        room_id="!r:example.com",
+                        event_id="$e1",
+                        sender="@user:example.com",
+                        body=(
+                            "> <@a:example.com> https://www.instagram.com/reel/QUOTED/\n"
+                            "\n"
+                            "nice"
+                        ),
+                        is_reply=True,
+                    )
+                    await asyncio.sleep(0.05)
+                    dl.assert_not_called()
+            asyncio.run(_run())
+            self.assertEqual(bot.sent_video, [])
+
+    def test_thread_and_metadata_caption(self) -> None:
+        from reelgrab.downloader import MediaFile
+
+        cfg = _cfg()
+        bot = FakeBot()
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+            fake_file = Path(td) / "DeKbm0Ssn6M_bridge.mp4"
+            fake_file.write_bytes(b"\x00" * 20_000)
+
+            async def _fake_dl(url, dl_cfg):
+                return MediaFile(
+                    path=fake_file,
+                    mime="video/mp4",
+                    size=fake_file.stat().st_size,
+                    duration_ms=2500,
+                    width=1080,
+                    height=1920,
+                    video_id="DeKbm0Ssn6M",
+                    uploader="clips",
+                    title="Sunset",
+                    thumbnail_width=640,
+                    thumbnail_height=1138,
+                )
+
+            async def _run() -> None:
+                with patch("reelgrab.handlers.download_url", side_effect=_fake_dl):
+                    await handle_message(
+                        bot,
+                        cfg,
+                        store,
+                        room_id="!r:example.com",
+                        event_id="$e1",
+                        sender="@user:example.com",
+                        body="https://www.instagram.com/reel/DeKbm0Ssn6M/",
+                        thread_root_event_id="$root",
+                        dedupe=DedupeCache(3600),
+                        sem=asyncio.Semaphore(1),
+                    )
+                    for _ in range(50):
+                        if not _background_tasks:
+                            break
+                        await asyncio.sleep(0.02)
+
+            asyncio.run(_run())
+            self.assertEqual(len(bot.sent_video), 1)
+            kwargs = bot.sent_video[0][3]
+            self.assertEqual(kwargs["filename"], "DeKbm0Ssn6M.mp4")
+            self.assertIn("@clips: Sunset", kwargs["caption"])
+            self.assertIn("instagram.com/reel/DeKbm0Ssn6M", kwargs["caption"])
+            self.assertEqual(kwargs["thread_root_event_id"], "$root")
+            self.assertEqual(kwargs["thumbnail_width"], 640)
+            self.assertEqual(kwargs["thumbnail_height"], 1138)
+            self.assertIn(("!r:example.com", "$e1", "⏳"), bot.reactions)
+            self.assertIn(("!r:example.com", "$e1", "✅"), bot.reactions)
+
+    def test_cache_hit_skips_download(self) -> None:
+        from reelgrab.media_cache import CachedMedia, MediaCache
+
+        cfg = _cfg()
+        bot = FakeBot()
+        with tempfile.TemporaryDirectory() as td:
+            store = StateStore(Path(td) / "s.yaml")
+            cache = MediaCache(Path(td) / "media_cache.sqlite")
+            cache.put(
+                "https://www.instagram.com/reel/ABC123/",
+                CachedMedia(
+                    url_key="",
+                    source_url="https://www.instagram.com/reel/ABC123/",
+                    mxc="mxc://example.com/cached",
+                    mime="video/mp4",
+                    size=999,
+                    duration_ms=1000,
+                    width=720,
+                    height=1280,
+                    filename="ABC123.mp4",
+                    uploader="clips",
+                    title="Again",
+                    thumbnail_mxc=None,
+                    thumbnail_width=None,
+                    thumbnail_height=None,
+                    thumbnail_size=None,
+                    blurhash=None,
+                ),
+            )
+
+            async def _run() -> None:
+                with patch("reelgrab.handlers.download_url") as dl:
+                    await handle_message(
+                        bot,
+                        cfg,
+                        store,
+                        room_id="!other:example.com",
+                        event_id="$e2",
+                        sender="@user:example.com",
+                        body="https://instagram.com/reel/ABC123/?utm=1",
+                        dedupe=DedupeCache(3600),
+                        sem=asyncio.Semaphore(1),
+                        cache=cache,
+                    )
+                    for _ in range(50):
+                        if not _background_tasks:
+                            break
+                        await asyncio.sleep(0.02)
+                    dl.assert_not_called()
+
+            asyncio.run(_run())
+            self.assertEqual(bot.sent_video[0][1], "mxc://example.com/cached")
+            self.assertEqual(bot.uploads, [])
 
 
 if __name__ == "__main__":

@@ -36,13 +36,37 @@ DEFAULT_URL_PATTERNS: list[str] = [
     r"tiktok\.com/t/",
     r"vm\.tiktok\.com/",
     r"vt\.tiktok\.com/",
-    # Twitter/X amplify_video CDN: direct MP4 (not status pages).
+    # Twitter/X amplify_video CDN: direct MP4.
     r"video\.twimg\.com/amplify_video/.+\.mp4",
+    # Instagram feed posts and IGTV (often video).
+    r"instagram\.com/p/",
+    r"instagram\.com/tv/",
+    # X / Twitter status pages (host-anchored so "box.com" does not match).
+    r"https?://(?:www\.|mobile\.)?(?:twitter\.com|x\.com)/[^/?#\s]+/status/\d+",
+    # Threads, Bluesky, Reddit.
+    r"https?://(?:www\.)?threads\.(?:net|com)/(?:@|t/)",
+    r"https?://(?:www\.)?bsky\.app/profile/[^/?#\s]+/post/",
+    r"https?://v\.redd\.it/",
+    r"https?://(?:www\.|old\.|m\.)?reddit\.com/r/[^/?#\s]+/comments/",
+    r"https?://(?:www\.)?redd\.it/[A-Za-z0-9]+",
 ]
 
 # Always merged into configured patterns so existing config.yaml files
 # pick up amplify_video without a manual edit.
 AMPLIFY_URL_PATTERN = r"video\.twimg\.com/amplify_video/.+\.mp4"
+
+# Patterns added after the v0.5.0 defaults. Merged at load time so an existing
+# ``urls.url_patterns`` list picks them up without a rewrite.
+EXTRA_URL_PATTERNS: list[str] = [
+    r"instagram\.com/p/",
+    r"instagram\.com/tv/",
+    r"https?://(?:www\.|mobile\.)?(?:twitter\.com|x\.com)/[^/?#\s]+/status/\d+",
+    r"https?://(?:www\.)?threads\.(?:net|com)/(?:@|t/)",
+    r"https?://(?:www\.)?bsky\.app/profile/[^/?#\s]+/post/",
+    r"https?://v\.redd\.it/",
+    r"https?://(?:www\.|old\.|m\.)?reddit\.com/r/[^/?#\s]+/comments/",
+    r"https?://(?:www\.)?redd\.it/[A-Za-z0-9]+",
+]
 
 
 def normalize_url(url: str) -> str:

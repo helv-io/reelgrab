@@ -34,11 +34,10 @@ class TestUrls(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("CyQ7uxjOUpM", found[0])
 
-    def test_ignore_instagram_long_post_and_tv(self) -> None:
-        # Short-form only: classic /p/ and /tv/ are not matched by defaults
-        self.assertEqual(find_matching_urls("https://instagram.com/p/XYZ/", PATTERNS), [])
+    def test_instagram_post_and_tv(self) -> None:
+        self.assertEqual(len(find_matching_urls("https://instagram.com/p/XYZ/", PATTERNS)), 1)
         self.assertEqual(
-            find_matching_urls("https://www.instagram.com/tv/XYZ/", PATTERNS), []
+            len(find_matching_urls("https://www.instagram.com/tv/XYZ/", PATTERNS)), 1
         )
 
     def test_youtube_shorts_only(self) -> None:
@@ -70,6 +69,20 @@ class TestUrls(unittest.TestCase):
         )
         self.assertTrue(find_matching_urls("https://vm.tiktok.com/ZMabcdef/", PATTERNS))
         self.assertTrue(find_matching_urls("https://vt.tiktok.com/ZSxyz/", PATTERNS))
+
+    def test_threads_bluesky_reddit_and_twitter_status(self) -> None:
+        samples = [
+            "https://x.com/someuser/status/1234567890",
+            "https://twitter.com/someuser/status/1234567890",
+            "https://www.threads.net/@someuser/post/ABC123",
+            "https://bsky.app/profile/user.example.com/post/3abc",
+            "https://v.redd.it/abc123",
+            "https://www.reddit.com/r/videos/comments/abc123/title/",
+            "https://redd.it/abc123",
+        ]
+        for sample in samples:
+            found = find_matching_urls(sample, PATTERNS)
+            self.assertEqual(found, [sample], sample)
 
     def test_ignore_unrelated(self) -> None:
         text = "https://example.com/video/123"
@@ -153,8 +166,11 @@ class TestUrls(unittest.TestCase):
         self.assertFalse(
             is_amplify_video_url("https://twitter.com/user/status/2102222769186537472")
         )
+        status = "https://x.com/someuser/status/1234567890123456789"
+        self.assertEqual(find_matching_urls(status, PATTERNS), [status])
+        # Short hosts must not match lookalikes such as box.com.
         self.assertEqual(
-            find_matching_urls("https://x.com/user/status/1", PATTERNS),
+            find_matching_urls("https://box.com/user/status/1", PATTERNS),
             [],
         )
 

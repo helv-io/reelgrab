@@ -37,7 +37,7 @@ def _cfg(**kwargs) -> AppConfig:
             admin_users=kwargs.get("admins", ["@admin:example.com"]),
             auto_download=kwargs.get("auto", True),
             allowed_rooms=kwargs.get("rooms", []),
-            command_prefix=kwargs.get("prefix", "!grab"),
+            command_prefix=kwargs.get("prefix", "!reel"),
         ),
     )
 
@@ -78,6 +78,15 @@ class TestCommands(unittest.TestCase):
     def test_parse_legacy_ig_prefix(self) -> None:
         cfg = _cfg()
         self.assertIsNone(parse_command("!ig https://instagram.com/reel/ABC/", cfg))
+
+    def test_custom_command_prefix_is_honored(self) -> None:
+        cfg = _cfg(prefix="!grab")
+        self.assertIsNone(parse_command("!reel help", cfg))
+        self.assertEqual(parse_command("!grab status", cfg), ("status", []))
+        self.assertEqual(
+            parse_command("!grab https://example.com/clip", cfg),
+            ("grab", ["https://example.com/clip"]),
+        )
 
     def test_parse_unknown(self) -> None:
         cfg = _cfg()

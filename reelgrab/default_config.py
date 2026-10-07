@@ -67,8 +67,8 @@ bot:
     # Automatically download when a matching URL appears in a watched room.
     auto_download: true
     # Listen prefix. The bot ignores a message unless it contains this exact
-    # token or a supported media URL. Bare chat ("ping", "help", ...) is ignored.
-    # The token is fixed: !reel
+    # whole token or a supported media URL. Bare chat ("ping", "help", ...) is ignored.
+    # Change the token here if you want a different command (!reel is the default).
     command_prefix: "!reel"
     # If non-empty, only these room IDs get auto-downloads / force commands.
     # Empty list = every room the bot has joined.
@@ -76,16 +76,20 @@ bot:
     allowed_rooms: []
     # Reply to the triggering message when posting the video or an error.
     reply_to_original: true
-    # Optional body text on successful m.video. Empty = filename only
-    # (Matrix requires a body; no "Downloading…" / success notices are sent).
+    # Optional body text on successful m.video. Empty = a metadata caption
+    # ("@uploader: title · source url"), or the filename when metadata is missing.
+    # Matrix requires a body. No "Downloading…" / success notices are sent.
     success_caption: ""
-    # Send an m.notice with the exception traceback when download/upload fails.
+    # On failure, react with ❌ and post one short line. The traceback stays in the log.
     notify_on_failure: true
     # Max concurrent downloads.
     max_concurrent: 2
-    # Do not re-download the same URL in the same room within this window (seconds).
+    # Do not post the same URL again in the same room within this window (seconds).
+    # A repeat in another room (or after the window) reuses the uploaded file.
     dedupe_ttl_seconds: 3600
-    # After connect, skip historical messages (only handle new events).
+    # Skip events whose origin_server_ts is older than this process start.
+    # Stops a homeserver backlog replay after downtime from re-grabbing old links.
+    # Set false to process those queued events.
     ignore_history: true
     # Join rooms when invited.
     join_on_invite: true
@@ -94,6 +98,8 @@ bot:
     admin_users: []
     # Relative paths are resolved against the data directory.
     state_file: runtime_state.yaml
+    # SQLite cache of canonical URL → uploaded mxc (shared across rooms, survives restart).
+    media_cache_file: media_cache.sqlite
 
 # Download (in-process yt-dlp; ffmpeg for convert / probe / thumbnail).
 download:
@@ -102,24 +108,34 @@ download:
     # Netscape cookies.txt for sites that need a logged-in session.
     # Relative to data dir.
     cookies_file: cookies.txt
-    # yt-dlp format selector (video+audio merged when needed).
-    format: bv*+ba/b
+    # yt-dlp format selector. Prefers H.264 (avc1) + AAC so compatible files
+    # can be posted without a re-encode. The legacy value bv*+ba/b is treated
+    # as this selector. Set any other string to use it verbatim.
+    # Quote the value: a leading * is a YAML alias.
+    format: "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[vcodec^=h264]+ba[acodec^=mp4a]/bv*+ba/b"
     # Remux container after yt-dlp merge (before convert step).
     merge_output_format: mp4
-    # Re-encode for federated/bridged clients: H.264 + AAC in MP4, yuv420p.
-    # Defaults favour broad mobile compatibility; override as needed.
+    # Refuse a download longer than this many seconds (0 = no limit).
+    max_duration_seconds: 600
+    # Optional upload ceiling in bytes. 0 = ask the homeserver (m.upload.size)
+    # and step quality down until the file fits, instead of failing the upload.
+    max_upload_bytes: 0
+    # Re-encode when the source is not already H.264 + AAC + yuv420p in MP4.
     convert:
         enabled: true
         # true = always re-encode; false = skip when already H.264/AAC/yuv420p MP4
-        force: true
+        force: false
         video_codec: libx264
         audio_codec: aac
         audio_bitrate: 128k
         video_preset: veryfast
-        video_crf: 23
+        video_crf: 26
         pixel_format: yuv420p
-        profile: baseline
-        level: "3.1"
+        profile: high
+        level: "4.0"
+        # Peak video bitrate during re-encode. Empty string disables the cap.
+        max_bitrate: 2500k
+        bufsize: 5000k
         # Scale down if larger (0 = no limit). Aspect ratio kept; even dims.
         max_width: 1280
         max_height: 1280
@@ -128,7 +144,9 @@ download:
         extra_args: []
         timeout_seconds: 600
 
-# Short-form URL detection (reels / shorts only — not long-form watch pages).
+# URL detection. Defaults cover short-form hosts plus status/post links
+# (X, Instagram posts, Threads, Bluesky, Reddit). Long-form YouTube watch
+# pages are not included. !reel <url> can still fetch any other http(s) URL.
 urls:
     # Regex fragments matched against URLs found in message bodies.
     url_patterns:
@@ -155,6 +173,19 @@ urls:
         - vt\\.tiktok\\.com/
         # Twitter/X amplify_video CDN direct MP4
         - video\\.twimg\\.com/amplify_video/.+\\.mp4
+        # Instagram posts and IGTV
+        - instagram\\.com/p/
+        - instagram\\.com/tv/
+        # X / Twitter status permalinks
+        - https?://(?:www\\.|mobile\\.)?(?:twitter\\.com|x\\.com)/[^/?#\\s]+/status/\\d+
+        # Threads
+        - https?://(?:www\\.)?threads\\.(?:net|com)/(?:@|t/)
+        # Bluesky
+        - https?://(?:www\\.)?bsky\\.app/profile/[^/?#\\s]+/post/
+        # Reddit
+        - https?://v\\.redd\\.it/
+        - https?://(?:www\\.|old\\.|m\\.)?reddit\\.com/r/[^/?#\\s]+/comments/
+        - https?://(?:www\\.)?redd\\.it/[A-Za-z0-9]+
 
 # Logging.
 logging:

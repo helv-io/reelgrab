@@ -25,6 +25,15 @@ from reelgrab.config import AppConfig
 log = logging.getLogger("reelgrab.appservice")
 
 EventHandler = Callable[[list[dict[str, Any]]], Awaitable[None]]
+ReadyCheck = Callable[[], bool]
+
+
+class AppserviceNotReady(RuntimeError):
+    """Raised when a transaction arrives before the homeserver client is ready.
+
+    The HTTP handler turns this into 503 and forgets the txn id so the
+    homeserver can deliver the same transaction again.
+    """
 
 
 class _TxnDeduper:
@@ -43,6 +52,9 @@ class _TxnDeduper:
             self._seen.popitem(last=False)
         return False
 
+    def discard(self, txn_id: str) -> None:
+        self._seen.pop(txn_id, None)
+
 
 class AppserviceServer:
     """HTTP endpoint the homeserver calls (mautrix / Matrix AS protocol)."""
@@ -55,6 +67,7 @@ class AppserviceServer:
     ) -> None:
         self.cfg = cfg
         self._on_events = on_events
+        self._ready_check: ReadyCheck | None = None
         self._txn = _TxnDeduper()
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -63,6 +76,16 @@ class AppserviceServer:
 
     def on_events(self, handler: EventHandler) -> None:
         self._on_events = handler
+
+    def set_ready_check(self, check: ReadyCheck | None) -> None:
+        """When set, ``/health`` is 503 until ``check()`` is true."""
+        self._ready_check = check
+
+    @property
+    def ready(self) -> bool:
+        if self._ready_check is None:
+            return True
+        return bool(self._ready_check())
 
     def _add_routes(self, app: web.Application) -> None:
         # Spec paths
@@ -127,8 +150,16 @@ class AppserviceServer:
         log.info("txn %s: %d event(s)", txn_id, len(events))
         if self._on_events and events:
             # Process in-task but do not fail the HS ack on handler errors.
+            # Not-ready is different: the homeserver should retry the txn.
             try:
                 await self._on_events(events)
+            except AppserviceNotReady:
+                self._txn.discard(txn_id)
+                log.info("txn %s deferred; client not ready", txn_id)
+                return web.json_response(
+                    {"errcode": "M_UNKNOWN", "error": "appservice not ready"},
+                    status=503,
+                )
             except Exception:
                 log.exception("event handler failed for txn %s", txn_id)
 
@@ -156,7 +187,11 @@ class AppserviceServer:
         return web.json_response({})
 
     async def _health(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "bot": self.cfg.user_id})
+        ready = self.ready
+        return web.json_response(
+            {"ok": ready, "ready": ready, "bot": self.cfg.user_id},
+            status=200 if ready else 503,
+        )
 
     async def start(self) -> None:
         host = self.cfg.appservice.hostname or "0.0.0.0"
@@ -180,18 +215,18 @@ class AppserviceServer:
 
 
 def text_body_from_event(event: dict[str, Any]) -> str | None:
-    """Extract plain text (plus formatted HTML if present) from m.room.message."""
+    """Plain text of an ``m.text`` / ``m.emote``. Notices and media are ignored.
+
+    ``formatted_body`` is not appended: reply fallbacks put the quoted message
+    (and its links) in the HTML, which would grab a URL the user did not send.
+    """
     if event.get("type") != "m.room.message":
         return None
     content = event.get("content") or {}
     msgtype = content.get("msgtype")
-    if msgtype not in ("m.text", "m.notice", "m.emote"):
+    if msgtype not in ("m.text", "m.emote"):
         return None
-    body = content.get("body") or ""
-    formatted = content.get("formatted_body") or ""
-    if formatted and formatted not in body:
-        return f"{body}\n{formatted}"
-    return body
+    return content.get("body") or ""
 
 
 def iter_room_events(events: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:

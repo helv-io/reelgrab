@@ -19,4 +19,9 @@ ENV PYTHONUNBUFFERED=1
 VOLUME ["/data"]
 RUN mkdir -p /data
 
+# /health is 503 until the homeserver answers, then 200.
+# The check uses the default appservice port 29399.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:29399/health', timeout=4)"
+
 CMD ["python", "-m", "reelgrab"]

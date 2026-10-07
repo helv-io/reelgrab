@@ -50,11 +50,12 @@ class AppserviceConfig:
 @dataclass
 class BotConfig:
     auto_download: bool = True
-    # Fixed listen token. The process only reacts to ``!reel`` (see commands).
+    # Whole-token listen prefix. Default ``!reel``. Bare chat never matches.
     command_prefix: str = "!reel"
     allowed_rooms: list[str] = field(default_factory=list)
     reply_to_original: bool = True
-    # Empty = use filename only as m.video body (no extra success chatter).
+    # Empty = metadata caption (``@uploader: title · url``), or the filename
+    # when the download has no title/uploader.
     success_caption: str = ""
     notify_on_failure: bool = True
     max_concurrent: int = 2
@@ -63,6 +64,8 @@ class BotConfig:
     join_on_invite: bool = True
     admin_users: list[str] = field(default_factory=list)
     state_file: str = "runtime_state.yaml"
+    # SQLite map of canonical URL → uploaded mxc. Relative to the data dir.
+    media_cache_file: str = "media_cache.sqlite"
 
 
 @dataclass
@@ -71,17 +74,21 @@ class ConvertConfig:
 
     enabled: bool = True
     # If false, skip re-encode when source is already H.264/AAC/yuv420p in MP4.
-    force: bool = True
+    force: bool = False
     video_codec: str = "libx264"
     audio_codec: str = "aac"
     audio_bitrate: str = "128k"
     # libx264 preset / CRF (lower CRF = higher quality / larger file)
     video_preset: str = "veryfast"
-    video_crf: int = 23
+    video_crf: int = 26
     pixel_format: str = "yuv420p"
-    # H.264 profile/level for broad mobile playback
-    profile: str = "baseline"
-    level: str = "3.1"
+    # H.264 profile/level. High + 4.0 plays on current phones and stays smaller
+    # than baseline at the same resolution.
+    profile: str = "high"
+    level: str = "4.0"
+    # Peak video bitrate. Empty string disables the cap.
+    max_bitrate: str = "2500k"
+    bufsize: str = "5000k"
     # Downscale long edge if larger (0 = no limit). Even dimensions enforced.
     max_width: int = 1280
     max_height: int = 1280
@@ -91,12 +98,26 @@ class ConvertConfig:
     timeout_seconds: int = 600
 
 
+# Prefer H.264 + AAC so a later convert step can remux instead of re-encode.
+# The legacy selector ``bv*+ba/b`` is rewritten to this at download time.
+DEFAULT_YTDLP_FORMAT = (
+    "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/"
+    "bv*[vcodec^=h264]+ba[acodec^=mp4a]/"
+    "bv*+ba/b"
+)
+LEGACY_YTDLP_FORMAT = "bv*+ba/b"
+
+
 @dataclass
 class DownloadConfig:
     work_dir: str = "downloads"
     cookies_file: str = "cookies.txt"
-    format: str = "bv*+ba/b"
+    format: str = DEFAULT_YTDLP_FORMAT
     merge_output_format: str = "mp4"
+    # Reject downloads longer than this. 0 disables the guard.
+    max_duration_seconds: int = 600
+    # Optional ceiling in bytes. 0 means "use the homeserver's m.upload.size".
+    max_upload_bytes: int = 0
     convert: ConvertConfig = field(default_factory=ConvertConfig)
 
 
@@ -159,12 +180,17 @@ class AppConfig:
 
     @property
     def url_patterns(self) -> list[str]:
-        from reelgrab.urls import AMPLIFY_URL_PATTERN
+        from reelgrab.urls import AMPLIFY_URL_PATTERN, EXTRA_URL_PATTERNS
 
         patterns = list(self.urls.url_patterns)
-        if AMPLIFY_URL_PATTERN not in patterns:
-            patterns.append(AMPLIFY_URL_PATTERN)
+        for extra in (AMPLIFY_URL_PATTERN, *EXTRA_URL_PATTERNS):
+            if extra not in patterns:
+                patterns.append(extra)
         return patterns
+
+    @property
+    def media_cache_path(self) -> Path:
+        return self.resolve_path(self.bot.media_cache_file)
 
     def resolve_path(self, p: str | Path) -> Path:
         path = Path(p)
