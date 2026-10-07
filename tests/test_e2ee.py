@@ -7,12 +7,15 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from reelgrab.commands import effective_auto, effective_caption, effective_notify
 from reelgrab.config import (
     AppConfig,
+    AppserviceBotConfig,
     AppserviceConfig,
+    EncryptionConfig,
     HomeserverConfig,
     bootstrap,
     build_registration,
@@ -218,6 +221,206 @@ class TestEncryptedDispatch(unittest.IsolatedAsyncioTestCase):
         finally:
             await bot.close()
             await client.close()
+
+
+class _Synapse162HS:
+    """Homeserver that 500s on device_id lookups the way Synapse 1.162 does.
+
+    ``keys/upload`` (and any other request) that sends ``device_id`` without
+    ``user_id``, or before ``m.login.application_service`` created the device,
+    returns HTTP 500. A successful login records the device. After that,
+    upload succeeds only when both query params match.
+    """
+
+    def __init__(self, *, upload_ok: bool) -> None:
+        self.upload_ok = upload_ok
+        self.calls: list[dict[str, Any]] = []
+        self.device_id: str | None = None
+
+    async def handler(self, request: web.Request) -> web.Response:
+        body: Any = None
+        if request.method in {"POST", "PUT", "PATCH"} and request.can_read_body:
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+        query = {key: request.query.get(key) for key in request.query}
+        self.calls.append(
+            {
+                "method": request.method,
+                "path": request.path,
+                "query": query,
+                "body": body,
+            }
+        )
+        path = request.path
+        if path.endswith("/versions"):
+            return web.json_response({"versions": ["v1.11"]})
+        if path.endswith("/register"):
+            return web.json_response({"user_id": "@reelgrab:example.com"})
+        if path.endswith("/media/config") or path.endswith("/config"):
+            return web.json_response({"m.upload.size": 50_000_000})
+        if "/profile/" in path and request.method == "GET":
+            return web.json_response({"displayname": "Reelgrab"})
+        if path.endswith("/displayname") and request.method == "PUT":
+            return web.json_response({})
+        if path.endswith("/joined_rooms"):
+            return web.json_response({"joined_rooms": ["!r:example.com"]})
+        if path.endswith("/login") and request.method == "POST":
+            return self._login(query, body if isinstance(body, dict) else {})
+        if path.endswith("/keys/upload"):
+            return self._keys_upload(query)
+        if "/send/" in path and request.method == "PUT":
+            return web.json_response({"event_id": "$sent"})
+        if "/state/" in path:
+            return web.json_response({"errcode": "M_NOT_FOUND"}, status=404)
+        return web.json_response({})
+
+    def _login(self, query: dict[str, str], body: dict[str, Any]) -> web.Response:
+        # device_id in the query, before the row exists, is the UserID 500.
+        if query.get("device_id") or query.get("org.matrix.msc3202.device_id"):
+            return web.json_response({"error": "can't adapt type 'UserID'"}, status=500)
+        device_id = body.get("device_id")
+        identifier = body.get("identifier") if isinstance(body.get("identifier"), dict) else {}
+        ok = (
+            body.get("type") == "m.login.application_service"
+            and identifier.get("type") == "m.id.user"
+            and identifier.get("user") == "@reelgrab:example.com"
+            and query.get("user_id") == "@reelgrab:example.com"
+            and isinstance(device_id, str)
+            and device_id
+        )
+        if not ok:
+            return web.json_response({})
+        self.device_id = device_id
+        return web.json_response(
+            {
+                "user_id": "@reelgrab:example.com",
+                "device_id": device_id,
+                "access_token": "as-login",
+            }
+        )
+
+    def _keys_upload(self, query: dict[str, str]) -> web.Response:
+        user_id = query.get("user_id")
+        device_id = query.get("device_id")
+        ready = (
+            self.upload_ok
+            and self.device_id is not None
+            and user_id == "@reelgrab:example.com"
+            and device_id == self.device_id
+        )
+        if not ready:
+            return web.json_response({"error": "can't adapt type 'UserID'"}, status=500)
+        return web.json_response({"one_time_key_counts": {"signed_curve25519": 50}})
+
+
+class TestEncryptionStartup(unittest.IsolatedAsyncioTestCase):
+    async def _start(
+        self, *, upload_ok: bool, enabled: bool = True
+    ) -> tuple[MatrixBot, _Synapse162HS, TestClient]:
+        hs = _Synapse162HS(upload_ok=upload_ok)
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", hs.handler)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addAsyncCleanup(client.close)
+        cfg = AppConfig(
+            homeserver=HomeserverConfig(
+                address=str(client.make_url("")).rstrip("/"),
+                domain="example.com",
+            ),
+            appservice=AppserviceConfig(
+                as_token="as" * 16,
+                hs_token="hs" * 16,
+                bot=AppserviceBotConfig(username="reelgrab", avatar="", displayname="Reelgrab"),
+            ),
+            encryption=EncryptionConfig(enabled=enabled),
+        )
+        cfg.data_dir = Path(tmp.name)
+        bot = MatrixBot(cfg)
+        self.addAsyncCleanup(bot.close)
+        return bot, hs, client
+
+    async def test_failed_key_upload_does_not_poison_sends(self) -> None:
+        bot, hs, _client = await self._start(upload_ok=False)
+        with self.assertLogs("reelgrab.matrix", level="WARNING") as logs:
+            await bot.start()
+        disabled = [rec for rec in logs.records if "E2EE disabled" in rec.getMessage()]
+        self.assertEqual(len(disabled), 1)
+        self.assertEqual(len(logs.records), 1)
+        self.assertIsNone(disabled[0].exc_info)
+        self.assertIn("Unencrypted rooms keep working", disabled[0].getMessage())
+        self.assertIsNone(bot.device_id)
+        self.assertIsNone(bot._machine)
+        self.assertIsNone(bot._crypto_client)
+        stored = await bot._crypto_store.get_device_id()
+        self.assertTrue(str(stored).startswith("REELGRAB"))
+
+        await bot.send_text("!r:example.com", "still here")
+        await bot.send_reaction("!r:example.com", "$src", "⏳")
+        sends = [call for call in hs.calls if "/send/" in call["path"]]
+        self.assertEqual(len(sends), 2)
+        for call in sends:
+            self.assertNotIn("device_id", call["query"])
+            self.assertNotIn("user_id", call["query"])
+            self.assertNotIn("org.matrix.msc3202.device_id", call["query"])
+        self.assertTrue(bot.ready)
+
+    async def test_login_then_upload_with_user_id(self) -> None:
+        bot, hs, _client = await self._start(upload_ok=True)
+        await bot.start()
+        self.assertTrue(bot.ready)
+        self.assertTrue(str(bot.device_id).startswith("REELGRAB"))
+        device_id = bot.device_id
+        assert device_id is not None
+
+        logins = [call for call in hs.calls if call["path"].endswith("/login")]
+        self.assertEqual(len(logins), 1)
+        login = logins[0]
+        self.assertEqual(login["method"], "POST")
+        self.assertEqual(login["query"].get("user_id"), "@reelgrab:example.com")
+        self.assertNotIn("device_id", login["query"])
+        self.assertNotIn("org.matrix.msc3202.device_id", login["query"])
+        self.assertEqual(login["body"]["type"], "m.login.application_service")
+        self.assertEqual(
+            login["body"]["identifier"],
+            {"type": "m.id.user", "user": "@reelgrab:example.com"},
+        )
+        self.assertEqual(login["body"]["device_id"], device_id)
+
+        uploads = [call for call in hs.calls if call["path"].endswith("/keys/upload")]
+        self.assertGreaterEqual(len(uploads), 1)
+        login_at = hs.calls.index(login)
+        for call in uploads:
+            self.assertGreater(hs.calls.index(call), login_at)
+            self.assertEqual(call["query"].get("user_id"), "@reelgrab:example.com")
+            self.assertEqual(call["query"].get("device_id"), device_id)
+            self.assertEqual(call["query"].get("org.matrix.msc3202.device_id"), device_id)
+
+        await bot.send_text("!r:example.com", "hello")
+        sends = [call for call in hs.calls if "/send/" in call["path"]]
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0]["query"].get("user_id"), "@reelgrab:example.com")
+        self.assertEqual(sends[0]["query"].get("device_id"), device_id)
+        self.assertEqual(sends[0]["query"].get("org.matrix.msc3202.device_id"), device_id)
+        self.assertNotIn("encrypted", sends[0]["path"])
+
+    async def test_encryption_disabled_skips_login(self) -> None:
+        bot, hs, _client = await self._start(upload_ok=True, enabled=False)
+        with self.assertNoLogs("reelgrab.matrix", level="WARNING"):
+            await bot.start()
+        self.assertTrue(bot.ready)
+        self.assertIsNone(bot.device_id)
+        paths = [call["path"] for call in hs.calls]
+        self.assertFalse(any(path.endswith("/login") for path in paths))
+        self.assertFalse(any(path.endswith("/keys/upload") for path in paths))
+        await bot.send_text("!r:example.com", "plain")
+        sends = [call for call in hs.calls if "/send/" in call["path"]]
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0]["query"], {})
 
 
 class TestRoomSettings(unittest.TestCase):

@@ -193,6 +193,9 @@ urls:
 # registration.yaml gains org.matrix.msc3202: true. The homeserver must enable
 # MSC3202 transaction extensions and MSC2409 to-device messages, then restart.
 # url stays set — the bot does not poll /sync.
+# Startup logs in (m.login.application_service) to create the device, then
+# uploads keys with both user_id and device_id. If that fails, unencrypted
+# rooms keep working and sends do not carry a device id.
 encryption:
     enabled: true
 
