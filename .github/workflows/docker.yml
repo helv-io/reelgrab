@@ -65,13 +65,19 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.hub.outputs.image }}
+          # latest=auto (the default) also tags :latest for every semver
+          # release. Disable it so only the rule below can publish :latest.
+          flavor: |
+            latest=false
           tags: |
-            # latest on default branch
+            # :latest when this run's ref is the default branch: a push to
+            # main, the weekly rebuild, or a manual dispatch of that branch.
+            # A version tag must not move it. Tag jobs finish out of order,
+            # and the last one would otherwise own :latest.
             type=raw,value=latest,enable={{is_default_branch}}
-            # semver from git tags: v1.2.3 → 1.2.3, 1.2, 1
+            # v1.2.3 → 1.2.3. No floating major or minor tags; those raced
+            # the same way as :latest.
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             # branch slug
             type=ref,event=branch
             # PR number (build only; not pushed unless you enable push on PR)
