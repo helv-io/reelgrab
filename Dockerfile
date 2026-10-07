@@ -1,3 +1,17 @@
+# Build stage: python-olm has no prebuilt wheel for this Python/arch, so
+# compile it (and any other sdists) here with a toolchain that the runtime
+# image does not need to carry.
+FROM python:3.13-slim AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY pyproject.toml README.md LICENSE ./
+COPY reelgrab/ ./reelgrab/
+RUN pip wheel --no-cache-dir --wheel-dir /wheels .
+
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -7,10 +21,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the package from pyproject (pulls yt-dlp, PyYAML, aiohttp, aiofiles).
-COPY pyproject.toml README.md LICENSE ./
-COPY reelgrab/ ./reelgrab/
-RUN pip install --no-cache-dir .
+# Install the package and its wheels (yt-dlp, PyYAML, aiohttp, mautrix, python-olm).
+COPY --from=build /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links /wheels reelgrab \
+    && rm -rf /wheels \
+    && python -c "import olm, mautrix"
 
 ENV REELGRAB_DATA=/data
 ENV REELGRAB_DOCKER=1

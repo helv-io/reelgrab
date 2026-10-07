@@ -1,5 +1,5 @@
 """
-mautrix-style Application Service HTTP server.
+Application service HTTP server on mautrix-python.
 
 Synapse (and other homeservers) push events to registration ``url``:
 
@@ -9,16 +9,21 @@ Synapse (and other homeservers) push events to registration ``url``:
 
 Legacy paths without the ``/_matrix/app/v1`` prefix are also accepted.
 Auth: ``Authorization: Bearer <hs_token>`` or ``?access_token=<hs_token>``.
+
+``encryption_events`` is on, so MSC3202 to-device messages, device lists, and
+one-time-key counts in the transaction body are parsed and handed to the Olm
+machine. The registration ``url`` stays set; this process does not poll ``/sync``.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from aiohttp import web
+from mautrix.appservice import AppService
+from mautrix.appservice.state_store import FileASStateStore
 
 from reelgrab.config import AppConfig
 
@@ -36,28 +41,122 @@ class AppserviceNotReady(RuntimeError):
     """
 
 
-class _TxnDeduper:
-    """Remember recent transaction IDs so retries are idempotent."""
+class ReelgrabAppService(AppService):
+    """mautrix AppService plus ``/health`` and a not-ready 503."""
 
-    def __init__(self, capacity: int = 512) -> None:
-        self._capacity = max(32, capacity)
-        self._seen: OrderedDict[str, None] = OrderedDict()
+    def __init__(self, cfg: AppConfig, owner: AppserviceServer) -> None:
+        self._cfg = cfg
+        self._owner = owner
+        state_path = cfg.data_dir / "mx-state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(
+            server=cfg.homeserver.address,
+            domain=cfg.homeserver.domain,
+            as_token=cfg.as_token,
+            hs_token=cfg.hs_token,
+            bot_localpart=cfg.appservice.bot.username,
+            id=cfg.appservice.id,
+            state_store=FileASStateStore(path=state_path, binary=False),
+            encryption_events=True,
+            log="reelgrab.appservice",
+        )
+        # Ack a transaction only after handlers finish, matching the previous server.
+        self.synchronous_handlers = True
+        self.app.router.add_get("/health", self._health)
 
-    def seen_or_add(self, txn_id: str) -> bool:
-        if txn_id in self._seen:
-            self._seen.move_to_end(txn_id)
+        async def query_user(user_id: str) -> dict[str, str] | None:
+            if user_id == cfg.user_id:
+                return {"user_id": user_id}
+            return None
+
+        self.query_user = query_user
+        self.matrix_event_handler(self._forward_event)
+        self._injected_timestamps: set[str] = set()
+
+    def _is_ready(self) -> bool:
+        check = self._owner.ready_check
+        if check is None:
             return True
-        self._seen[txn_id] = None
-        while len(self._seen) > self._capacity:
-            self._seen.popitem(last=False)
-        return False
+        return bool(check())
 
-    def discard(self, txn_id: str) -> None:
-        self._seen.pop(txn_id, None)
+    async def _health(self, _request: web.Request) -> web.Response:
+        ready = self._is_ready()
+        return web.json_response(
+            {"ok": ready, "ready": ready, "bot": self._cfg.user_id},
+            status=200 if ready else 503,
+        )
+
+    async def _http_handle_transaction(self, request: web.Request) -> web.Response:
+        if not self._check_token(request):
+            return web.json_response({"error": "Invalid auth token"}, status=401)
+        # Refuse before the txn id is remembered so the homeserver retries.
+        if not self._is_ready():
+            return web.json_response(
+                {"errcode": "M_UNKNOWN", "error": "appservice not ready"},
+                status=503,
+            )
+        return await super()._http_handle_transaction(request)
+
+    async def handle_transaction(
+        self,
+        txn_id: str,
+        *,
+        events: list[Any],
+        extra_data: Any,
+        ephemeral: list[Any] | None = None,
+        to_device: list[Any] | None = None,
+        otk_counts: Any = None,
+        device_lists: Any = None,
+    ) -> Any:
+        # Homeserver events include origin_server_ts. Tolerate fixtures and
+        # odd payloads so a missing timestamp does not drop the transaction.
+        normalized: list[Any] = []
+        injected: set[str] = set()
+        for raw in events or []:
+            if isinstance(raw, dict) and "origin_server_ts" not in raw:
+                raw = dict(raw)
+                raw["origin_server_ts"] = 0
+                event_id = raw.get("event_id")
+                if event_id:
+                    injected.add(str(event_id))
+            normalized.append(raw)
+        self._injected_timestamps = injected
+        try:
+            return await super().handle_transaction(
+                txn_id,
+                events=normalized,
+                extra_data=extra_data,
+                ephemeral=ephemeral,
+                to_device=to_device,
+                otk_counts=otk_counts,
+                device_lists=device_lists,
+            )
+        finally:
+            self._injected_timestamps = set()
+
+    async def _forward_event(self, event: Any) -> None:
+        handler = self._owner._on_events
+        if handler is None:
+            return
+        if hasattr(event, "serialize"):
+            raw = event.serialize()
+        elif isinstance(event, dict):
+            raw = event
+        else:
+            return
+        if not isinstance(raw, dict):
+            return
+        etype = raw.get("type")
+        if etype is not None and not isinstance(etype, str):
+            raw["type"] = str(etype)
+        event_id = str(raw.get("event_id") or "")
+        if event_id in self._injected_timestamps and raw.get("origin_server_ts") == 0:
+            raw.pop("origin_server_ts", None)
+        await handler([raw])
 
 
 class AppserviceServer:
-    """HTTP endpoint the homeserver calls (mautrix / Matrix AS protocol)."""
+    """HTTP endpoint the homeserver calls (mautrix AppService)."""
 
     def __init__(
         self,
@@ -68,11 +167,12 @@ class AppserviceServer:
         self.cfg = cfg
         self._on_events = on_events
         self._ready_check: ReadyCheck | None = None
-        self._txn = _TxnDeduper()
-        self._runner: web.AppRunner | None = None
-        self._site: web.TCPSite | None = None
-        self.app = web.Application(middlewares=[self._auth_middleware])
-        self._add_routes(self.app)
+        self.service = ReelgrabAppService(cfg, self)
+        self.app = self.service.app
+
+    @property
+    def ready_check(self) -> ReadyCheck | None:
+        return self._ready_check
 
     def on_events(self, handler: EventHandler) -> None:
         self._on_events = handler
@@ -87,119 +187,10 @@ class AppserviceServer:
             return True
         return bool(self._ready_check())
 
-    def _add_routes(self, app: web.Application) -> None:
-        # Spec paths
-        app.router.add_put(
-            "/_matrix/app/v1/transactions/{txnId}", self._put_transaction
-        )
-        app.router.add_get("/_matrix/app/v1/users/{userId}", self._get_user)
-        app.router.add_get("/_matrix/app/v1/rooms/{roomAlias}", self._get_room)
-        # Legacy paths (older Synapse / bridges)
-        app.router.add_put("/transactions/{txnId}", self._put_transaction)
-        app.router.add_get("/users/{userId}", self._get_user)
-        app.router.add_get("/rooms/{roomAlias}", self._get_room)
-        # Health for operators
-        app.router.add_get("/_matrix/app/v1/thirdparty/protocol/{protocol}", self._empty_ok)
-        app.router.add_get("/health", self._health)
-
-    @web.middleware
-    async def _auth_middleware(
-        self, request: web.Request, handler: Callable
-    ) -> web.StreamResponse:
-        if request.path in ("/health", "/"):
-            return await handler(request)
-        if not self._authorized(request):
-            return web.json_response(
-                {"errcode": "M_FORBIDDEN", "error": "Invalid hs_token"},
-                status=401,
-            )
-        return await handler(request)
-
-    def _authorized(self, request: web.Request) -> bool:
-        expected = (self.cfg.hs_token or "").strip()
-        if not expected or expected.lower() == "generate":
-            return False
-        auth = request.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-            if token == expected:
-                return True
-        q = request.rel_url.query.get("access_token", "")
-        return bool(q) and q == expected
-
-    async def _put_transaction(self, request: web.Request) -> web.Response:
-        txn_id = request.match_info.get("txnId", "")
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response(
-                {"errcode": "M_BAD_JSON", "error": "Invalid JSON"},
-                status=400,
-            )
-        events = body.get("events") or []
-        if not isinstance(events, list):
-            return web.json_response(
-                {"errcode": "M_BAD_JSON", "error": "events must be a list"},
-                status=400,
-            )
-
-        if self._txn.seen_or_add(txn_id):
-            log.debug("duplicate txn %s (%d events) — ack only", txn_id, len(events))
-            return web.json_response({})
-
-        log.info("txn %s: %d event(s)", txn_id, len(events))
-        if self._on_events and events:
-            # Process in-task but do not fail the HS ack on handler errors.
-            # Not-ready is different: the homeserver should retry the txn.
-            try:
-                await self._on_events(events)
-            except AppserviceNotReady:
-                self._txn.discard(txn_id)
-                log.info("txn %s deferred; client not ready", txn_id)
-                return web.json_response(
-                    {"errcode": "M_UNKNOWN", "error": "appservice not ready"},
-                    status=503,
-                )
-            except Exception:
-                log.exception("event handler failed for txn %s", txn_id)
-
-        return web.json_response({})
-
-    async def _get_user(self, request: web.Request) -> web.Response:
-        user_id = request.match_info.get("userId", "")
-        # Claim only our exclusive bot user (namespace is a single MXID).
-        if user_id == self.cfg.user_id:
-            log.debug("user query claim %s", user_id)
-            return web.json_response({})
-        return web.json_response(
-            {"errcode": "M_NOT_FOUND", "error": "User not found"},
-            status=404,
-        )
-
-    async def _get_room(self, request: web.Request) -> web.Response:
-        # We do not claim room aliases.
-        return web.json_response(
-            {"errcode": "M_NOT_FOUND", "error": "Room not found"},
-            status=404,
-        )
-
-    async def _empty_ok(self, request: web.Request) -> web.Response:
-        return web.json_response({})
-
-    async def _health(self, request: web.Request) -> web.Response:
-        ready = self.ready
-        return web.json_response(
-            {"ok": ready, "ready": ready, "bot": self.cfg.user_id},
-            status=200 if ready else 503,
-        )
-
     async def start(self) -> None:
         host = self.cfg.appservice.hostname or "0.0.0.0"
         port = int(self.cfg.appservice.port or 29399)
-        self._runner = web.AppRunner(self.app, access_log=None)
-        await self._runner.setup()
-        self._site = web.TCPSite(self._runner, host, port)
-        await self._site.start()
+        await self.service.start(host, port)
         log.info(
             "appservice listening on %s:%s (hs url should be %s)",
             host,
@@ -208,10 +199,7 @@ class AppserviceServer:
         )
 
     async def stop(self) -> None:
-        if self._runner is not None:
-            await self._runner.cleanup()
-            self._runner = None
-            self._site = None
+        await self.service.stop()
 
 
 def text_body_from_event(event: dict[str, Any]) -> str | None:

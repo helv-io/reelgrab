@@ -67,7 +67,7 @@ class _FakeHS:
             body = await request.json()
             self.avatar_url = body.get("avatar_url")
             return web.json_response({})
-        if path.endswith("/upload"):
+        if path.endswith("/upload") and "/keys/" not in path:
             self.uploads += 1
             return web.json_response({"content_uri": f"mxc://example.com/up{self.uploads}"})
         if path.endswith("/joined_rooms"):

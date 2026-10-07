@@ -40,7 +40,7 @@ appservice:
         displayname: "🎞️ Reelgrab"
         # Avatar set on startup. Matrix profile avatars are mxc:// URIs hosted
         # by your homeserver (federated media). Values:
-        #   default  — packaged reelgrab icon (upload + set each start)
+        #   default  — packaged reelgrab icon (uploaded when the file changes)
         #   <path>   — image file (relative to data dir, or absolute)
         #   empty    — leave avatar unchanged
         avatar: default
@@ -186,6 +186,15 @@ urls:
         - https?://v\\.redd\\.it/
         - https?://(?:www\\.|old\\.|m\\.)?reddit\\.com/r/[^/?#\\s]+/comments/
         - https?://(?:www\\.)?redd\\.it/[A-Za-z0-9]+
+
+# End-to-end encryption for encrypted rooms and encrypted DMs.
+# Device keys are stored in the data directory (crypto.sqlite, crypto_pickle.key,
+# mx-state.json). The existing data volume is enough; no extra mount is required.
+# registration.yaml gains org.matrix.msc3202: true. The homeserver must enable
+# MSC3202 transaction extensions and MSC2409 to-device messages, then restart.
+# url stays set — the bot does not poll /sync.
+encryption:
+    enabled: true
 
 # Logging.
 logging:

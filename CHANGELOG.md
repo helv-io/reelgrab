@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-07
+
+Encrypted rooms and encrypted DMs, on the mautrix appservice stack. Unencrypted rooms keep the same commands and upload behavior.
+
+### Added
+
+- End-to-end encryption via mautrix-python (Olm/Megolm). Encrypted rooms and default encrypted Element DMs can run `!reel help` and receive videos. The homeserver still **pushes** transactions to `url`; the bot does not call `/sync`.
+- Per-room `!reel room auto`, `!reel room notify`, and `!reel room caption`. A room with no override keeps the global setting.
+- `!reel status` includes the E2EE device id when encryption is up.
+
+### Migration
+
+No new environment variables. No new Docker volume when `./data` is already mounted at `/data`. The data directory gains `crypto.sqlite`, `crypto_pickle.key`, and `mx-state.json` (device identity and room encryption state). Losing those files makes the bot a new device; encrypted sessions have to be shared again.
+
+On startup, `registration.yaml` is rewritten with `org.matrix.msc3202: true`. `url`, `as_token`, `hs_token`, and `sender_localpart` stay the same. If the homeserver uses a copy of that file, install the new copy and restart the homeserver.
+
+Synapse 1.141+ (or another homeserver with the same appservice extensions) needs:
+
+```yaml
+experimental_features:
+  msc3202_transaction_extensions: true
+  msc2409_to_device_messages_enabled: true
+```
+
+Until those flags are on, unencrypted rooms still work. Encrypted events are logged as undecryptable. Set `encryption.enabled: false` to skip device-key upload entirely.
+
+### Changed
+
+- The appservice HTTP server is mautrix's `AppService` (`encryption_events` on), with the same `/health` behavior and the same not-ready `503` so a transaction is retried.
+
 ## [0.6.0] - 2026-10-07
 
 Matrix-side behavior for existing rooms. Appservice registration, tokens, and `url` are unchanged. A `config.yaml` that already sets convert / format / prefix values keeps those values.

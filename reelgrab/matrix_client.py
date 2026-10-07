@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import mimetypes
+import secrets
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -112,6 +113,12 @@ class MatrixBot:
         self._joined: set[str] = set()
         # Rooms known to be DMs (m.room.member invite is_direct, or 2 members)
         self._direct_rooms: set[str] = set()
+        self._appservice: Any = None
+        self._device_id: str | None = None
+        self._machine: Any = None
+        self._crypto_client: Any = None
+        self._crypto_store: Any = None
+        self._plain_rooms: set[str] = set()
 
     @property
     def user_id(self) -> str:
@@ -121,8 +128,16 @@ class MatrixBot:
     def ready(self) -> bool:
         return self._ready
 
+    @property
+    def device_id(self) -> str | None:
+        return self._device_id
+
     def on_text_message(self, handler: MessageHandler) -> None:
         self._message_handler = handler
+
+    def bind_appservice(self, appservice: Any) -> None:
+        """Share the mautrix appservice state store and MSC3202 transaction hooks."""
+        self._appservice = appservice
 
     def joined_room_ids(self) -> list[str]:
         return sorted(self._joined)
@@ -185,12 +200,116 @@ class MatrixBot:
         await self._load_media_config()
         await self._ensure_profile()
         await self._refresh_joined_rooms()
+        await self._start_encryption()
 
     async def close(self) -> None:
         self._ready = False
+        if self._crypto_store is not None:
+            try:
+                await self._crypto_store.close()
+            except Exception:
+                log.debug("crypto store close failed", exc_info=True)
+            self._crypto_store = None
+        self._machine = None
+        self._crypto_client = None
         if self._session is not None:
             await self._session.close()
             self._session = None
+
+    def _pickle_key(self) -> str:
+        path = self.cfg.data_dir / "crypto_pickle.key"
+        if path.is_file():
+            key = path.read_text(encoding="utf-8").strip()
+            if key:
+                return key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_hex(32)
+        path.write_text(key + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return key
+
+    async def _start_encryption(self) -> None:
+        """Load the Olm account and publish device keys (MSC3202).
+
+        A homeserver that has not enabled transaction extensions will reject
+        ``/keys/upload``. The bot still serves unencrypted rooms; encrypted
+        rooms start working after the homeserver flags are on and the process
+        restarts (the same device id is kept in the crypto store).
+        """
+        enabled = True
+        encryption = getattr(self.cfg, "encryption", None)
+        if encryption is not None:
+            enabled = bool(getattr(encryption, "enabled", True))
+        if not enabled:
+            log.info("encryption disabled in config")
+            return
+        if self._session is None:
+            return
+        try:
+            from mautrix.api import HTTPAPI
+            from mautrix.client import Client
+            from mautrix.crypto import OlmMachine
+
+            from reelgrab.crypto_store import SQLiteCryptoStore
+
+            store = SQLiteCryptoStore(self.cfg.data_dir / "crypto.sqlite", self._pickle_key())
+            await store.open()
+            self._crypto_store = store
+            device_id = await store.get_device_id()
+            if not device_id:
+                device_id = "REELGRAB" + secrets.token_hex(4).upper()
+                await store.put_device_id(device_id)
+            self._device_id = str(device_id)
+
+            if self._appservice is not None:
+                state_store = self._appservice.service.state_store
+            else:
+                from mautrix.appservice.state_store import FileASStateStore
+
+                state_path = self.cfg.data_dir / "mx-state.json"
+                state_store = FileASStateStore(path=state_path, binary=False)
+                await state_store.open()
+
+            api = HTTPAPI(
+                base_url=self.cfg.homeserver.address,
+                token=self.cfg.as_token,
+                client_session=self._session,
+            )
+            api.as_device_id = device_id
+            crypto_client = Client(
+                self.user_id,
+                device_id,
+                api=api,
+                state_store=state_store,
+            )
+            machine = OlmMachine(crypto_client, store, state_store)
+            await machine.load()
+            crypto_client.crypto = machine
+            self._crypto_client = crypto_client
+            self._machine = machine
+            if self._appservice is not None:
+                service = self._appservice.service
+                service.to_device_handler = machine.handle_as_to_device_event
+                service.device_list_handler = machine.handle_as_device_lists
+                service.otk_handler = machine.handle_as_otk_counts
+            try:
+                await machine.share_keys()
+                log.info("e2ee ready device_id=%s", device_id)
+            except Exception as exc:
+                log.warning(
+                    "device keys were not accepted (%s). Encrypted rooms need "
+                    "MSC3202 on the homeserver; unencrypted rooms still work. "
+                    "device_id=%s",
+                    exc,
+                    device_id,
+                )
+        except Exception:
+            log.exception("e2ee setup failed; encrypted rooms will not work")
+            self._machine = None
+            self._crypto_client = None
 
     async def _request(
         self,
@@ -429,16 +548,20 @@ class MatrixBot:
         if not room_id:
             return
 
+        if etype == "m.room.encryption":
+            self._plain_rooms.discard(room_id)
+            return
+
         if etype == "m.room.member":
+            await self._note_member_for_crypto(event)
             await self._handle_member(event)
             return
 
         if etype == "m.room.encrypted":
-            log.warning(
-                "ignoring encrypted event in %s — enable encryption support or "
-                "disable E2EE for this room/DM",
-                room_id,
-            )
+            decrypted = await self._decrypt_to_dict(event)
+            if decrypted is None:
+                return
+            await self._handle_one_event(decrypted)
             return
 
         if etype != "m.room.message":
@@ -504,6 +627,107 @@ class MatrixBot:
             is_reply=reply,
             thread_root_event_id=thread_root_id(event),
         )
+
+    async def _note_member_for_crypto(self, event: dict[str, Any]) -> None:
+        if self._machine is None:
+            return
+        try:
+            from mautrix.types import StateEvent
+
+            await self._machine.handle_member_event(StateEvent.deserialize(event))
+        except Exception:
+            log.debug("member crypto update failed", exc_info=True)
+
+    async def _decrypt_to_dict(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        room_id = event.get("room_id") or ""
+        if self._machine is None:
+            log.warning(
+                "encrypted event in %s but e2ee is not ready "
+                "(homeserver MSC3202 extensions, or encryption.enabled)",
+                room_id,
+            )
+            return None
+        from mautrix.errors import DecryptionError
+        from mautrix.types import EncryptedEvent
+
+        try:
+            decrypted = await self._machine.decrypt_megolm_event(EncryptedEvent.deserialize(event))
+        except DecryptionError as exc:
+            log.warning("decrypt failed %s: %s", event.get("event_id"), exc)
+            return None
+        except Exception:
+            log.warning("decrypt failed %s", event.get("event_id"), exc_info=True)
+            return None
+        data = decrypted.serialize() if hasattr(decrypted, "serialize") else dict(decrypted)
+        if not isinstance(data, dict):
+            return None
+        etype = data.get("type")
+        if etype is not None and not isinstance(etype, str):
+            data["type"] = str(etype)
+        data.setdefault("room_id", room_id)
+        data.setdefault("event_id", event.get("event_id"))
+        data.setdefault("sender", event.get("sender"))
+        if event.get("origin_server_ts") is not None:
+            data.setdefault("origin_server_ts", event.get("origin_server_ts"))
+        return data
+
+    async def _maybe_encrypt(
+        self, room_id: str, event_type: str, content: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        """Megolm-encrypt room messages when the room is encrypted.
+
+        Reactions stay unencrypted; clients accept ``m.reaction`` in encrypted rooms.
+        """
+        client = self._crypto_client
+        if client is None or not getattr(client, "crypto", None) or event_type == "m.reaction":
+            return content, event_type
+        try:
+            encrypted = await self._room_is_encrypted(room_id)
+        except Exception:
+            log.debug("encryption state lookup failed for %s", room_id, exc_info=True)
+            return content, event_type
+        if not encrypted:
+            return content, event_type
+        from mautrix.types import EventType
+
+        payload = await client.encrypt(room_id, EventType.find(event_type), content)
+        if hasattr(payload, "serialize"):
+            payload = payload.serialize()
+        if not isinstance(payload, dict):
+            raise RuntimeError("encrypt did not return event content")
+        return payload, "m.room.encrypted"
+
+    async def _room_is_encrypted(self, room_id: str) -> bool:
+        client = self._crypto_client
+        if client is None or client.state_store is None:
+            return False
+        flag = await client.state_store.is_encrypted(room_id)
+        if flag is not None:
+            return bool(flag)
+        if room_id in self._plain_rooms:
+            return False
+        from mautrix.errors import MNotFound
+        from mautrix.types import EventType
+
+        try:
+            content = await client.get_state_event(room_id, EventType.ROOM_ENCRYPTION)
+        except MNotFound:
+            self._plain_rooms.add(room_id)
+            return False
+        except Exception:
+            log.debug("room encryption state unavailable for %s", room_id, exc_info=True)
+            return False
+        if isinstance(content, dict):
+            algorithm = content.get("algorithm")
+        else:
+            algorithm = getattr(content, "algorithm", None)
+        if not algorithm:
+            self._plain_rooms.add(room_id)
+            return False
+        setter = getattr(client.state_store, "set_encryption_info", None)
+        if setter is not None and content is not None:
+            await setter(room_id, content)
+        return True
 
     async def _handle_member(self, event: dict[str, Any]) -> None:
         room_id = event.get("room_id") or ""
@@ -710,13 +934,21 @@ class MatrixBot:
         *,
         event_type: str = "m.room.message",
     ) -> str:
+        content, event_type = await self._maybe_encrypt(room_id, event_type, content)
         txn_id = f"{int(time.time() * 1000)}{uuid.uuid4().hex[:8]}"
         rid = quote(room_id, safe="")
         etype = quote(event_type, safe="")
+        params = None
+        if self._device_id:
+            params = {
+                "org.matrix.msc3202.device_id": self._device_id,
+                "device_id": self._device_id,
+            }
         data = await self._request(
             "PUT",
             f"/_matrix/client/v3/rooms/{rid}/send/{etype}/{txn_id}",
             json=content,
+            params=params,
         )
         if isinstance(data, dict):
             return str(data.get("event_id") or "")
