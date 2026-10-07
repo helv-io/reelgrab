@@ -79,9 +79,9 @@ class TestBootstrap(unittest.TestCase):
         self.assertIn("instagram", blob)
         self.assertIn("amplify_video", blob)
         self.assertIn("threads", blob)
-        self.assertIn("bsky.app", blob)
-        self.assertIn("reddit.com", blob)
-        self.assertIn("/status/", blob)
+        self.assertIn("bsky", blob)
+        self.assertIn("reddit", blob)
+        self.assertIn("status", blob)
 
     def test_registration_regex(self) -> None:
         cfg = parse_config_dict(

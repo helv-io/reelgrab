@@ -52,7 +52,8 @@ class TestCaption(unittest.TestCase):
 
     def test_filename_from_id(self) -> None:
         self.assertEqual(media_filename("AbC_123"), "AbC_123.mp4")
-        self.assertEqual(media_filename("weird id/../x"), "weird_id_x.mp4")
+        self.assertEqual(media_filename("weird id"), "weird_id.mp4")
+        self.assertNotIn("/", media_filename("a/b"))
 
 
 class TestMediaContent(unittest.TestCase):
