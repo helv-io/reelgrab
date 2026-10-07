@@ -231,13 +231,60 @@ class MatrixBot:
             pass
         return key
 
-    async def _start_encryption(self) -> None:
-        """Load the Olm account and publish device keys (MSC3202).
+    def _disable_encryption(self, reason: str) -> None:
+        """Drop the live device id so later sends stay ordinary Client-Server calls.
 
-        A homeserver that has not enabled transaction extensions will reject
-        ``/keys/upload``. The bot still serves unencrypted rooms; encrypted
-        rooms start working after the homeserver flags are on and the process
-        restarts (the same device id is kept in the crypto store).
+        The sqlite store keeps the device id for the next start. Attaching it
+        to ``/send`` before ``/keys/upload`` succeeds makes Synapse 1.162 reject
+        those sends as well.
+        """
+        self._device_id = None
+        self._machine = None
+        self._crypto_client = None
+        if self._appservice is not None:
+            service = self._appservice.service
+            service.to_device_handler = None
+            service.device_list_handler = None
+            service.otk_handler = None
+        log.warning(
+            "E2EE disabled: %s. Unencrypted rooms keep working; "
+            "the device id is not attached to sends.",
+            reason,
+        )
+
+    async def _login_appservice_device(self, device_id: str) -> None:
+        """Create the bot device with ``m.login.application_service``.
+
+        Synapse only accepts ``device_id`` on later requests after this login
+        has inserted the device row. The login itself must not send
+        ``device_id`` as a query parameter: the row does not exist yet, and
+        Synapse 1.162 looks that query up with the appservice sender object
+        (a ``UserID``, which Postgres cannot store) unless ``user_id`` is also
+        a query string.
+        """
+        data = await self._request(
+            "POST",
+            "/_matrix/client/v3/login",
+            json={
+                "type": "m.login.application_service",
+                "identifier": {"type": "m.id.user", "user": self.user_id},
+                "device_id": device_id,
+                "initial_device_display_name": "reelgrab",
+            },
+            params={"user_id": self.user_id},
+        )
+        returned = data.get("device_id") if isinstance(data, dict) else None
+        if returned != device_id:
+            raise RuntimeError(
+                f"appservice login did not return device {device_id} (got {returned!r})"
+            )
+        log.info("appservice device %s logged in", device_id)
+
+    async def _start_encryption(self) -> None:
+        """Log in a device, then publish Olm keys (MSC3202).
+
+        ``self._device_id`` is set only after ``/keys/upload`` succeeds. Until
+        then, and if setup fails, room sends omit ``device_id`` and ``user_id``.
         """
         enabled = True
         encryption = getattr(self.cfg, "encryption", None)
@@ -248,6 +295,8 @@ class MatrixBot:
             return
         if self._session is None:
             return
+        # Never inherit a device id from a previous attempt in this process.
+        self._device_id = None
         try:
             from mautrix.api import HTTPAPI
             from mautrix.client import Client
@@ -262,7 +311,8 @@ class MatrixBot:
             if not device_id:
                 device_id = "REELGRAB" + secrets.token_hex(4).upper()
                 await store.put_device_id(device_id)
-            self._device_id = str(device_id)
+            device_id = str(device_id)
+            await self._login_appservice_device(device_id)
 
             if self._appservice is not None:
                 state_store = self._appservice.service.state_store
@@ -278,6 +328,9 @@ class MatrixBot:
                 token=self.cfg.as_token,
                 client_session=self._session,
             )
+            # Both query params. device_id alone is what makes Synapse 1.162
+            # pass a UserID object into get_device and return HTTP 500.
+            api.as_user_id = self.user_id
             api.as_device_id = device_id
             crypto_client = Client(
                 self.user_id,
@@ -288,28 +341,21 @@ class MatrixBot:
             machine = OlmMachine(crypto_client, store, state_store)
             await machine.load()
             crypto_client.crypto = machine
-            self._crypto_client = crypto_client
-            self._machine = machine
-            if self._appservice is not None:
-                service = self._appservice.service
-                service.to_device_handler = machine.handle_as_to_device_event
-                service.device_list_handler = machine.handle_as_device_lists
-                service.otk_handler = machine.handle_as_otk_counts
-            try:
-                await machine.share_keys()
-                log.info("e2ee ready device_id=%s", device_id)
-            except Exception as exc:
-                log.warning(
-                    "device keys were not accepted (%s). Encrypted rooms need "
-                    "MSC3202 on the homeserver; unencrypted rooms still work. "
-                    "device_id=%s",
-                    exc,
-                    device_id,
-                )
-        except Exception:
-            log.exception("e2ee setup failed; encrypted rooms will not work")
-            self._machine = None
-            self._crypto_client = None
+            await machine.share_keys()
+        except Exception as exc:
+            text = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+            self._disable_encryption(text)
+            return
+
+        self._crypto_client = crypto_client
+        self._machine = machine
+        self._device_id = device_id
+        if self._appservice is not None:
+            service = self._appservice.service
+            service.to_device_handler = machine.handle_as_to_device_event
+            service.device_list_handler = machine.handle_as_device_lists
+            service.otk_handler = machine.handle_as_otk_counts
+        log.info("e2ee ready device_id=%s", device_id)
 
     async def _request(
         self,
@@ -941,6 +987,7 @@ class MatrixBot:
         params = None
         if self._device_id:
             params = {
+                "user_id": self.user_id,
                 "org.matrix.msc3202.device_id": self._device_id,
                 "device_id": self._device_id,
             }

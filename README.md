@@ -137,7 +137,7 @@ experimental_features:
   msc2409_to_device_messages_enabled: true
 ```
 
-Device keys and Megolm sessions are files in the data directory (`crypto.sqlite`, `crypto_pickle.key`, `mx-state.json`). The `./data:/data` mount already covers them. There is no new volume and no new environment variable. `encryption.enabled: false` turns the Olm machine off; unencrypted rooms keep working either way.
+Device keys and Megolm sessions are files in the data directory (`crypto.sqlite`, `crypto_pickle.key`, `mx-state.json`). The `./data:/data` mount already covers them. There is no new volume and no new environment variable. On startup the bot logs in with `m.login.application_service` to create its device, then uploads keys with both `user_id` and `device_id`. If that fails it logs one warning and leaves unencrypted sends alone. `encryption.enabled: false` turns the Olm machine off.
 
 An encrypted DM can send `!reel help`. The reply and the uploaded video are encrypted for that room. Reactions stay as normal `m.reaction` events.
 

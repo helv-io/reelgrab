@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-10-07
+
+Fixes end-to-end encryption against Synapse 1.162. Turn `encryption.enabled` back to `true` and restart. No registration change and no new volume.
+
+### Fixed
+
+- `POST /_matrix/client/v3/keys/upload` was sent with `device_id` and without `user_id`. Synapse 1.162 then looks the device up using the appservice sender object (`UserID`). Postgres answers `can't adapt type 'UserID'` and the request is HTTP 500. Key upload now sends both query parameters, and only after the device exists.
+- The bot device (an id like `REELGRAB…`) was never created. Startup now logs in with `m.login.application_service` and that `device_id` before uploading keys, which is what inserts the device row.
+- A failed key upload still stored the device id and attached it to later sends, including media, reactions, and notices in unencrypted rooms. The device id is published only after login and key upload succeed. On failure the process logs one warning and ordinary sends stay free of `device_id`.
+
 ## [0.7.0] - 2026-10-07
 
 Encrypted rooms and encrypted DMs, on the mautrix appservice stack. Unencrypted rooms keep the same commands and upload behavior.
