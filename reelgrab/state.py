@@ -21,6 +21,8 @@ class RuntimeState:
     allowed_rooms: list[str] | None = None
     notify_on_failure: bool | None = None
     success_caption: str | None = None
+    # room_id → {auto_download, notify_on_failure, success_caption}
+    rooms: dict[str, dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -59,6 +61,30 @@ class StateStore:
                     self.state.to_dict(), f, default_flow_style=False, sort_keys=True
                 )
             tmp.replace(self.path)
+
+    def room_value(self, room_id: str, key: str) -> Any:
+        rooms = self.state.rooms or {}
+        room = rooms.get(room_id) or {}
+        if key not in room:
+            return None
+        return room[key]
+
+    def set_room(self, room_id: str, **kwargs: Any) -> None:
+        """Set per-room overrides. A value of None removes that key."""
+        with self._lock:
+            rooms = dict(self.state.rooms or {})
+            current = dict(rooms.get(room_id) or {})
+            for key, value in kwargs.items():
+                if value is None:
+                    current.pop(key, None)
+                else:
+                    current[key] = value
+            if current:
+                rooms[room_id] = current
+            else:
+                rooms.pop(room_id, None)
+            self.state.rooms = rooms or None
+            self.save()
 
     def update(self, **kwargs: Any) -> RuntimeState:
         with self._lock:

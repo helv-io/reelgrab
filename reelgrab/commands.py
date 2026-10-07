@@ -6,7 +6,7 @@ import html
 import logging
 import re
 import shlex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from reelgrab.config import AppConfig
 from reelgrab.state import StateStore
@@ -31,6 +31,7 @@ ADMIN_COMMANDS = frozenset(
         "auto",
         "notify",
         "caption",
+        "room",
         "grab",
     }
 )
@@ -48,6 +49,10 @@ _HELP_ROWS: list[tuple[str, str]] = [
     ("!reel auto on|off", "Auto-download matching links"),
     ("!reel notify on|off", "Short failure line in the room"),
     ("!reel caption <text>", "Caption override (caption clear = metadata)"),
+    ("!reel room", "This room's auto, notify, and caption"),
+    ("!reel room auto on|off|default", "Auto-download override for this room"),
+    ("!reel room notify on|off|default", "Failure line override for this room"),
+    ("!reel room caption <text>", "Caption override for this room"),
     ("!reel <url>", "Download one URL now"),
 ]
 
@@ -86,7 +91,16 @@ def is_admin(sender: str, cfg: AppConfig) -> bool:
     return sender in admins
 
 
-def effective_auto(cfg: AppConfig, store: StateStore) -> bool:
+def _room_override(store: StateStore, room_id: str | None, key: str) -> Any:
+    if not room_id:
+        return None
+    return store.room_value(room_id, key)
+
+
+def effective_auto(cfg: AppConfig, store: StateStore, room_id: str | None = None) -> bool:
+    override = _room_override(store, room_id, "auto_download")
+    if override is not None:
+        return bool(override)
     if store.state.auto_download is not None:
         return store.state.auto_download
     return cfg.bot.auto_download
@@ -98,13 +112,19 @@ def effective_allowed_rooms(cfg: AppConfig, store: StateStore) -> list[str]:
     return list(cfg.bot.allowed_rooms or [])
 
 
-def effective_notify(cfg: AppConfig, store: StateStore) -> bool:
+def effective_notify(cfg: AppConfig, store: StateStore, room_id: str | None = None) -> bool:
+    override = _room_override(store, room_id, "notify_on_failure")
+    if override is not None:
+        return bool(override)
     if store.state.notify_on_failure is not None:
         return store.state.notify_on_failure
     return cfg.bot.notify_on_failure
 
 
-def effective_caption(cfg: AppConfig, store: StateStore) -> str:
+def effective_caption(cfg: AppConfig, store: StateStore, room_id: str | None = None) -> str:
+    override = _room_override(store, room_id, "success_caption")
+    if override is not None:
+        return str(override)
     if store.state.success_caption is not None:
         return store.state.success_caption
     return cfg.bot.success_caption
@@ -276,9 +296,13 @@ async def handle_command(
                     else "off"
                 ),
             ),
-            ("auto_download", str(effective_auto(cfg, store))),
-            ("notify_on_failure", str(effective_notify(cfg, store))),
-            ("caption", repr(effective_caption(cfg, store))),
+            ("auto_download", str(effective_auto(cfg, store, room_id))),
+            ("notify_on_failure", str(effective_notify(cfg, store, room_id))),
+            ("caption", repr(effective_caption(cfg, store, room_id))),
+            (
+                "e2ee",
+                f"device {bot.device_id}" if getattr(bot, "device_id", None) else "off",
+            ),
             ("allowed_rooms", str(allowed or "(all invited)")),
             (
                 "cookies",
@@ -371,10 +395,93 @@ async def handle_command(
         await reply_text(f"caption = {text!r}")
         return True
 
+    if cmd == "room":
+        await _room_settings_command(
+            reply_text, cfg, store, room_id=room_id, prefix=prefix, args=args
+        )
+        return True
+
     if cmd == "grab":
         return False
 
     return False
+
+
+def _parse_toggle(token: str) -> bool | None:
+    value = token.lower()
+    if value == "on":
+        return True
+    if value == "off":
+        return False
+    if value in ("default", "clear", "inherit"):
+        return None
+    raise ValueError(token)
+
+
+async def _room_settings_command(
+    reply_text,
+    cfg: AppConfig,
+    store: StateStore,
+    *,
+    room_id: str,
+    prefix: str,
+    args: list[str],
+) -> None:
+    """Per-room auto / notify / caption. Omitted keys inherit the global setting."""
+    if not args:
+        auto = effective_auto(cfg, store, room_id)
+        notify = effective_notify(cfg, store, room_id)
+        caption = effective_caption(cfg, store, room_id)
+        own = (store.state.rooms or {}).get(room_id) or {}
+        await reply_text(
+            f"room {room_id}\n"
+            f"auto_download = {auto} (override {own.get('auto_download', 'inherit')})\n"
+            f"notify_on_failure = {notify} (override {own.get('notify_on_failure', 'inherit')})\n"
+            f"caption = {caption!r}"
+        )
+        return
+    kind = args[0].lower()
+    rest = args[1:]
+    if kind == "auto":
+        if not rest:
+            await reply_text(f"Usage: {prefix} room auto on|off|default")
+            return
+        try:
+            value = _parse_toggle(rest[0])
+        except ValueError:
+            await reply_text(f"Usage: {prefix} room auto on|off|default")
+            return
+        store.set_room(room_id, auto_download=value)
+        await reply_text(f"room auto_download = {effective_auto(cfg, store, room_id)}")
+        return
+    if kind == "notify":
+        if not rest:
+            await reply_text(f"Usage: {prefix} room notify on|off|default")
+            return
+        try:
+            value = _parse_toggle(rest[0])
+        except ValueError:
+            await reply_text(f"Usage: {prefix} room notify on|off|default")
+            return
+        store.set_room(room_id, notify_on_failure=value)
+        await reply_text(f"room notify_on_failure = {effective_notify(cfg, store, room_id)}")
+        return
+    if kind == "caption":
+        if not rest:
+            await reply_text(f"Usage: {prefix} room caption <text> | {prefix} room caption clear")
+            return
+        if rest[0].lower() in ("clear", "default"):
+            store.set_room(room_id, success_caption=None)
+            await reply_text("room caption inherits the global caption")
+            return
+        text = " ".join(rest)
+        store.set_room(room_id, success_caption=text)
+        await reply_text(f"room caption = {text!r}")
+        return
+    await reply_text(
+        f"Usage: {prefix} room | {prefix} room auto on|off|default | "
+        f"{prefix} room notify on|off|default | {prefix} room caption <text>"
+    )
 
 
 def grab_urls_from_command(

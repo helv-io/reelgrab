@@ -29,7 +29,7 @@ services:
     # Exit 0 after generating config must not restart-loop
     restart: on-failure
     volumes:
-      # config.yaml, registration.yaml, cookies, downloads, runtime_state
+      # config, registration, cookies, downloads, crypto store, media cache
       - ./data:/data
     environment:
       TZ: UTC

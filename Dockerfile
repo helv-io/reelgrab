@@ -7,10 +7,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the package from pyproject (pulls yt-dlp, PyYAML, aiohttp, aiofiles).
+# Install the package from pyproject (yt-dlp, PyYAML, aiohttp, mautrix, python-olm).
 COPY pyproject.toml README.md LICENSE ./
 COPY reelgrab/ ./reelgrab/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . \
+    && python -c "import olm, mautrix"
 
 ENV REELGRAB_DATA=/data
 ENV REELGRAB_DOCKER=1

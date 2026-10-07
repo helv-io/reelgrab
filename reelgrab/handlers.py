@@ -205,7 +205,7 @@ async def handle_message(
         return
     if not room_allowed_effective(room_id, cfg, store):
         return
-    if not effective_auto(cfg, store):
+    if not effective_auto(cfg, store, room_id):
         return
 
     urls = matched_urls
@@ -280,12 +280,13 @@ def _caption_for(
     cfg: AppConfig,
     store: StateStore,
     *,
+    room_id: str,
     url: str,
     filename: str,
     uploader: str | None,
     title: str | None,
 ) -> tuple[str, str | None]:
-    custom = effective_caption(cfg, store)
+    custom = effective_caption(cfg, store, room_id)
     body = build_caption(
         uploader=uploader,
         title=title,
@@ -326,6 +327,7 @@ async def _send_cached(
     caption, html_body = _caption_for(
         cfg,
         store,
+        room_id=room_id,
         url=url,
         filename=filename,
         uploader=item.uploader,
@@ -481,7 +483,7 @@ async def _notify_failure(
     exc: BaseException,
     thread_root_event_id: str | None = None,
 ) -> None:
-    if not effective_notify(cfg, store):
+    if not effective_notify(cfg, store, room_id):
         return
     try:
         await bot.send_text(
@@ -597,6 +599,7 @@ async def _process_one(
         caption, html_body = _caption_for(
             cfg,
             store,
+            room_id=room_id,
             url=url,
             filename=filename,
             uploader=media.uploader,
@@ -708,6 +711,7 @@ async def run_bot(cfg: AppConfig) -> None:
     sem = asyncio.Semaphore(max(1, cfg.bot.max_concurrent))
     appservice = AppserviceServer(cfg)
     appservice.set_ready_check(lambda: bot.ready)
+    bot.bind_appservice(appservice)
 
     async def _on_message(
         *,

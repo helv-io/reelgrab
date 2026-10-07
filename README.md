@@ -111,6 +111,7 @@ as_token: <secret>
 hs_token: <secret>
 sender_localpart: reelgrab
 rate_limited: false
+org.matrix.msc3202: true
 namespaces:
   users:
     - regex: '^@reelgrab:example\.com$'
@@ -119,10 +120,26 @@ namespaces:
 
 - `url` = `appservice.address` (e.g. `http://reelgrab:29399` on a shared Docker network).
 - Synapse calls `PUT /_matrix/app/v1/transactions/{txnId}` with `Authorization: Bearer <hs_token>`.
-- Outbound (send / upload / join) uses Client-Server API with `as_token`.
-- AS users cannot use Client-Server `/sync` on modern Synapse; set a real `url`.
+- Outbound (send / upload / join / device keys) uses the Client-Server API with `as_token`.
+- AS users cannot use Client-Server `/sync` on modern Synapse; set a real `url`. Encrypted rooms use MSC3202 fields inside that push, not `/sync`.
 - Bot MXID: `@<appservice.bot.username>:<homeserver.domain>`
 - After changing `registration.yaml`, restart the homeserver.
+
+### Encrypted rooms
+
+Upgrading from 0.6.x rewrites `registration.yaml` to add `org.matrix.msc3202: true`. Tokens and `url` stay. Copy the file onto the homeserver if it does not read the data directory directly, then restart the homeserver.
+
+Synapse 1.141 or newer also needs:
+
+```yaml
+experimental_features:
+  msc3202_transaction_extensions: true
+  msc2409_to_device_messages_enabled: true
+```
+
+Device keys and Megolm sessions are files in the data directory (`crypto.sqlite`, `crypto_pickle.key`, `mx-state.json`). The `./data:/data` mount already covers them. There is no new volume and no new environment variable. `encryption.enabled: false` turns the Olm machine off; unencrypted rooms keep working either way.
+
+An encrypted DM can send `!reel help`. The reply and the uploaded video are encrypted for that room. Reactions stay as normal `m.reaction` events.
 
 `GET /health` is open (no `hs_token`). It returns 503 until the homeserver answers and 200 once the bot is ready. The image `HEALTHCHECK` calls `http://127.0.0.1:29399/health`. If the homeserver is down at start, the process keeps retrying with backoff instead of logging ready and idling.
 
@@ -151,7 +168,7 @@ No extra homeserver config is required beyond a working appservice registration:
 
 The bot stays quiet unless a message contains the exact token `!reel` or a supported media URL. Bare chat such as `ping` gets no reply.
 
-1. DM `@reelgrab:example.com`.
+1. DM `@reelgrab:example.com` (an encrypted Element DM works once the homeserver MSC3202 flags above are on).
 2. Send `!reel help` / `!reel status` (admin commands need your MXID in `bot.admin_users`).
 3. Invite the bot to rooms that receive video links.
 4. Optional: `!reel allow !roomid:example.com`.
@@ -164,7 +181,7 @@ The bot stays quiet unless a message contains the exact token `!reel` or a suppo
 |---------|--------|
 | `!reel help` | Command list |
 | `!reel ping` | pong |
-| `!reel status` | runtime, cookies, yt-dlp version, upload limit |
+| `!reel status` | runtime, cookies, yt-dlp version, upload limit, E2EE device |
 | `!reel whoami` | your MXID |
 | `!reel rooms` | joined room IDs |
 | `!reel allow <room_id>` / `!reel allow clear` | allow-list |
@@ -172,6 +189,10 @@ The bot stays quiet unless a message contains the exact token `!reel` or a suppo
 | `!reel auto on\|off` | auto-download |
 | `!reel notify on\|off` | one-line failure notice |
 | `!reel caption <text>` | caption override (`caption clear` = metadata) |
+| `!reel room` | this room's auto / notify / caption |
+| `!reel room auto on\|off\|default` | auto-download for this room only |
+| `!reel room notify on\|off\|default` | failure line for this room only |
+| `!reel room caption <text>` | caption for this room (`room caption clear` inherits) |
 | `!reel <url>` | force one download (any http URL; admin) |
 
 `bot.command_prefix` is the listen token (default `!reel`). It must be a whole word.
@@ -244,8 +265,9 @@ reelgrab/
   __main__.py          # CLI
   config.py            # load / generate config + registration
   default_config.py    # documented default config.yaml
-  appservice.py        # HS → bot transaction HTTP (mautrix-style)
-  matrix_client.py     # as_token outbound CS API + event dispatch
+  appservice.py        # mautrix AppService HTTP (push transactions + /health)
+  matrix_client.py     # as_token outbound CS API, Olm machine, event dispatch
+  crypto_store.py      # sqlite Olm/Megolm store in the data directory
   matrix_content.py    # m.video content, captions, thread relations
   handlers.py          # pipeline
   commands.py          # DM admin commands

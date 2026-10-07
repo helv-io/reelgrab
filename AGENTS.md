@@ -18,6 +18,7 @@ Matrix **appservice** bot that watches for short-form video links (reels / short
 - Homeserver **pushes** events to registration `url` (`appservice.address`).
 - Outbound CS API uses `as_token`.
 - Modern Synapse rejects AS-user `/sync` — never set registration `url: null` and poll `/sync`.
+- Encrypted rooms use mautrix's appservice Olm machine (MSC3202 / MSC2409 to-device in the push transaction). Same `url`, no `/sync`.
 
 ## Layout
 
