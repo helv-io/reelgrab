@@ -41,7 +41,7 @@ python -m unittest discover -s tests -v
 
 ## Rules and what enforces them
 
-A rule that nothing enforces is a wish. Before you push, run `.agent-checks/bin/agent-checks local` (the shared `agent-checks` repo on Helvio's own git server) and the local checks above.
+A rule that nothing enforces is a wish. Before you push, run `.agent-checks/bin/agent-checks local` (the shared [`agent-checks`](https://github.com/helv-io/agent-checks) repo) and the local checks above.
 
 | Rule | Enforced by |
 |---|---|
