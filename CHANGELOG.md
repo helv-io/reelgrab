@@ -99,7 +99,7 @@ Listen rules and Twitter/X amplify_video direct MP4s. Config file layout, appser
 
 [0.5.0]: https://github.com/helv-io/reelgrab/releases/tag/v0.5.0
 
-## [0.4.3] — 2026-08-12
+## [0.4.3] - 2026-08-12
 
 Elegance / reliability pass. No config, command, or appservice protocol changes.
 
@@ -127,7 +127,7 @@ Elegance / reliability pass. No config, command, or appservice protocol changes.
 
 [0.4.3]: https://github.com/helv-io/reelgrab/releases/tag/v0.4.3
 
-## [0.4.2] — 2026-08-12
+## [0.4.2] - 2026-08-12
 
 First tagged release. Matrix **appservice** bot that watches rooms for short-form
 video links, downloads them with **yt-dlp**, and posts `m.video` back into the room.

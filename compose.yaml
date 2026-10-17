@@ -1,4 +1,4 @@
-# reelgrab — short-form video grabber for Matrix (appservice)
+# reelgrab: short-form video grabber for Matrix (appservice)
 #
 # Image options:
 #   image: helvio/reelgrab:latest   # Docker Hub (CI multi-arch)

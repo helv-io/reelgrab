@@ -40,7 +40,7 @@ mkdir -p data
 # 1) First run writes /data/config.yaml and exits
 docker compose run --rm reelgrab
 
-# 2) Edit config — at minimum:
+# 2) Edit config, at minimum:
 #      homeserver.address   e.g. http://synapse:8008
 #      homeserver.domain    e.g. example.com
 #      bot.admin_users      e.g. ["@you:example.com"]
@@ -106,7 +106,7 @@ Same model as **mautrix** bridges: the homeserver **pushes** events to the bot.
 
 ```yaml
 id: reelgrab
-url: http://reelgrab:29399   # appservice.address — HS must reach this
+url: http://reelgrab:29399   # appservice.address: HS must reach this
 as_token: <secret>
 hs_token: <secret>
 sender_localpart: reelgrab
@@ -256,7 +256,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ## Layout
 
