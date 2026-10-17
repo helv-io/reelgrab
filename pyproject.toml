@@ -32,6 +32,7 @@ reelgrab = ["assets/*"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = [".agent-checks"]
 target-version = "py311"
 
 [tool.ruff.lint]

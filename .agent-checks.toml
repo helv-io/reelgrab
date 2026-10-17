@@ -1,0 +1,19 @@
+# Settings for the shared checks (the pinned copy is in .agent-checks/).
+[docs]
+user-facing = "^reelgrab/"
+require = ["README.md", "CHANGELOG.md"]
+
+[model-ids]
+exempt = []
+
+[private]
+patterns = ['helv\.io']
+
+# Every file that repeats the version. The tag must equal both before images are published.
+[[release.version]]
+file = "pyproject.toml"
+pattern = '(?m)^version = "([^"]+)"'
+
+[[release.version]]
+file = "reelgrab/__init__.py"
+pattern = '__version__ = "([^"]+)"'
