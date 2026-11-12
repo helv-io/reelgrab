@@ -10,6 +10,11 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    env:
+      # python-olm 3.2.16 builds libolm from source on 3.13 (3.11 and 3.12
+      # install a wheel). libolm's CMakeLists asks for 3.4, which CMake 4
+      # on ubuntu-latest rejects. CMake 3.x ignores this variable.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     strategy:
       fail-fast: false
       matrix:

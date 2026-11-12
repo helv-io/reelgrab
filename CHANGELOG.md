@@ -19,6 +19,10 @@ The video message includes the original post description when the downloader has
 
 - A missing, blank, or `None` description adds no extra line. Text that repeats the title is not pasted twice. A trailing block of hashtag-only lines is dropped when other text remains. Hashtags mixed into a sentence stay.
 
+### Fixed
+
+- The CI install and the image build set `CMAKE_POLICY_VERSION_MINIMUM=3.5`. python-olm 3.2.16 compiles its bundled libolm, whose CMakeLists still asks for CMake 3.4. CMake 4 (current GitHub `ubuntu-latest`) rejects that. CMake 3.x ignores the variable, so an image build on the current Debian cmake is unchanged.
+
 ## [0.7.1] - 2026-10-07
 
 Fixes end-to-end encryption against Synapse 1.162. Turn `encryption.enabled` back to `true` and restart. No registration change and no new volume.

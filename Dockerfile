@@ -10,6 +10,10 @@ RUN apt-get update \
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
 COPY reelgrab/ ./reelgrab/
+# libolm, vendored by python-olm, still declares cmake_minimum_required(VERSION 3.4).
+# CMake 4 rejects that. 3.5 is the oldest version CMake 4 will accept. CMake 3.x
+# ignores this variable, so the cmake package in this image keeps configuring.
+ENV CMAKE_POLICY_VERSION_MINIMUM=3.5
 RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:3.13-slim
