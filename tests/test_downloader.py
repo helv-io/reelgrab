@@ -11,6 +11,7 @@ from unittest.mock import patch
 from reelgrab.config import ConvertConfig, DownloadConfig, parse_config_dict
 from reelgrab.downloader import (
     DownloadError,
+    _meta_from_info,
     _pick_file,
     build_convert_args,
     cleanup_job_dir,
@@ -26,6 +27,24 @@ AMPLIFY = (
 
 
 class TestDownloaderUtils(unittest.TestCase):
+    def test_meta_description(self) -> None:
+        meta = _meta_from_info(
+            {
+                "id": "abc",
+                "title": "A reel",
+                "uploader": "clips",
+                "description": "  A fox crossed the ridge.  ",
+            }
+        )
+        self.assertEqual(meta.title, "A reel")
+        self.assertEqual(meta.uploader, "clips")
+        self.assertEqual(meta.video_id, "abc")
+        self.assertEqual(meta.description, "A fox crossed the ridge.")
+        self.assertIsNone(_meta_from_info({"description": None}).description)
+        self.assertIsNone(_meta_from_info({"description": " None "}).description)
+        self.assertIsNone(_meta_from_info({"description": "null"}).description)
+        self.assertIsNone(_meta_from_info({}).description)
+
     def test_guess_mime_mp4(self) -> None:
         self.assertEqual(guess_mime(Path("x.mp4")), "video/mp4")
 

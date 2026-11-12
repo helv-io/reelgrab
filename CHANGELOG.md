@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-12
+
+The video message includes the original post description when the downloader has one. An existing `config.yaml` picks this up with no edits.
+
+### Added
+
+- `bot.include_description` (default `true`). The source description is part of the `m.video` body, under the existing `@uploader: title · url` line. mautrix-whatsapp copies that body (the HTML `formatted_body` when it is set) into the WhatsApp video caption, so the text shows under the video after bridging. A separate text message would show up as a second bubble.
+- `bot.max_description_length` (default `500`). A longer description is cut with an ellipsis. The full caption is also kept within 1024 characters, which is what WhatsApp accepts on a video, so a long description does not make the bridge reject the upload.
+- The description is stored on the media cache row. A cache file from an older version still opens. Those rows have no description until that URL is downloaded again.
+
+### Changed
+
+- A missing, blank, or `None` description adds no extra line. Text that repeats the title is not pasted twice. A trailing block of hashtag-only lines is dropped when other text remains. Hashtags mixed into a sentence stay.
+
+### Fixed
+
+- The CI install and the image build set `CMAKE_POLICY_VERSION_MINIMUM=3.5`. python-olm 3.2.16 compiles its bundled libolm, whose CMakeLists still asks for CMake 3.4. CMake 4 (current GitHub `ubuntu-latest`) rejects that. CMake 3.x ignores the variable, so an image build on the current Debian cmake is unchanged.
+
 ## [0.7.1] - 2026-10-07
 
 Fixes end-to-end encryption against Synapse 1.162. Turn `encryption.enabled` back to `true` and restart. No registration change and no new volume.

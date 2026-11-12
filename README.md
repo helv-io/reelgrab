@@ -197,11 +197,15 @@ The bot stays quiet unless a message contains the exact token `!reel` or a suppo
 
 `bot.command_prefix` is the listen token (default `!reel`). It must be a whole word.
 
-While a grab is in progress the bot reacts ⏳ on the source message, then ✅ or ❌. On success it posts the `m.video` with a filename and a caption (`@uploader: title · source url`, or `bot.success_caption` when that is set). On failure it posts one short line when `notify_on_failure` is on. The Python traceback stays in the log.
+While a grab is in progress the bot reacts ⏳ on the source message, then ✅ or ❌. On success it posts one `m.video`. The plain body is the caption: `@uploader: title · source url`, then the original post's description when the download has one and it is not already the title. `bot.success_caption`, when set, replaces the metadata line, and the description still follows. On failure it posts one short line when `notify_on_failure` is on. The Python traceback stays in the log.
+
+`bot.include_description` defaults to `true`. Set it to `false` to keep the metadata line only. `bot.max_description_length` (default `500`, `0` for no extra cut) is where a long description gets an ellipsis. Empty, blank, and `None` descriptions are skipped. A trailing run of hashtag-only lines is dropped when the caption still has other text. The same text is stored in `media_cache.sqlite`, so a later send uses it without downloading again. Rows written by an older version have no description until that URL is fetched again.
+
+That body is what shows under the video on WhatsApp. mautrix-whatsapp, when `filename` is set and the plain body is different, sends the body as `VideoMessage.Caption` (it prefers `formatted_body` if the message is HTML). A following `m.text` would be a second message, not the caption. WhatsApp rejects a video caption longer than 1024 characters, so the assembled body stays within that even when `max_description_length` is higher.
 
 A link sent inside a thread is answered inside that thread. Edits, `m.notice` messages, and the quoted part of a reply are ignored. With `bot.ignore_history: true` (the default), events older than this process start are skipped, so a backlog replay after downtime does not re-grab old links.
 
-The same URL is uploaded once. Later sends, including after a restart and in other rooms, reuse that `mxc://` from `media_cache.sqlite`. The same room will not post it again until `dedupe_ttl_seconds` has passed.
+The same URL is uploaded once. Later sends, including after a restart and in other rooms, reuse that `mxc://` from `media_cache.sqlite`, description included. The same room will not post it again until `dedupe_ttl_seconds` has passed.
 
 ## Config reference
 

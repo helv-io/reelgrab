@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from reelgrab.captions import build_caption, media_filename, thumbnail_dimensions
+from reelgrab.captions import (
+    BRIDGE_CAPTION_LIMIT,
+    build_caption,
+    caption_html,
+    media_filename,
+    thumbnail_dimensions,
+)
 from reelgrab.matrix_content import build_video_content, relates_to
 from reelgrab.messages import is_edit, is_historical, strip_reply_fallback
 
@@ -54,6 +60,202 @@ class TestCaption(unittest.TestCase):
         self.assertEqual(media_filename("AbC_123"), "AbC_123.mp4")
         self.assertEqual(media_filename("weird id"), "weird_id.mp4")
         self.assertNotIn("/", media_filename("a/b"))
+
+    def test_long_title_still_truncated(self) -> None:
+        title = "a" * 200
+        body = build_caption(
+            uploader="clips",
+            title=title,
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+        )
+        self.assertEqual(body, f"@clips: {'a' * 179}… · https://example.com/reel/abc")
+
+    def test_description_under_metadata(self) -> None:
+        body = build_caption(
+            uploader="natgeo",
+            title="Fox in snow",
+            source_url="https://www.instagram.com/reel/ABC123/",
+            filename="ABC123.mp4",
+            description="Filmed in Yellowstone last winter.",
+        )
+        self.assertEqual(
+            body,
+            "@natgeo: Fox in snow · https://www.instagram.com/reel/ABC123/\n"
+            "\n"
+            "Filmed in Yellowstone last winter.",
+        )
+
+    def test_missing_description_adds_no_blank_line(self) -> None:
+        expected = "@clips: A reel · https://example.com/reel/abc"
+        for value in (None, "", "   ", "None", "null", "NULL"):
+            body = build_caption(
+                uploader="clips",
+                title="A reel",
+                source_url="https://example.com/reel/abc",
+                filename="abc.mp4",
+                description=value,
+            )
+            self.assertEqual(body, expected)
+            self.assertNotIn("\n", body)
+            self.assertNotIn("None", body)
+
+    def test_description_equal_to_title_is_omitted(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Sunset",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="sunset",
+        )
+        self.assertEqual(body, "@clips: Sunset · https://example.com/reel/abc")
+
+    def test_description_keeps_only_the_extra_after_the_title(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="A fox at dawn",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="A fox at dawn\n\nFilmed in Yellowstone.",
+        )
+        self.assertEqual(body.count("A fox at dawn"), 1)
+        self.assertIn("@clips: A fox at dawn · https://example.com/reel/abc", body)
+        self.assertTrue(body.endswith("Filmed in Yellowstone."))
+
+    def test_long_title_is_not_repeated_when_description_is_the_same_text(self) -> None:
+        title = "a" * 200
+        body = build_caption(
+            uploader="clips",
+            title=title,
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description=title,
+            max_description_length=500,
+        )
+        self.assertTrue(body.startswith("@clips · https://example.com/reel/abc\n\n"))
+        self.assertEqual(body.count("a" * 200), 1)
+        self.assertNotIn("a" * 179 + "…", body)
+
+    def test_description_truncated(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Fox",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="abcdefghijklmnopqrstuvwxyz",
+            max_description_length=10,
+        )
+        self.assertTrue(body.endswith("abcdefghi…"))
+
+    def test_caption_stays_within_whatsapp_limit(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Title",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="word " * 500,
+            max_description_length=0,
+        )
+        self.assertLessEqual(len(body), BRIDGE_CAPTION_LIMIT)
+        self.assertTrue(body.endswith("…"))
+        self.assertIn("@clips: Title", body)
+
+    def test_trailing_hashtag_block_dropped(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Fox",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="A fox at dawn.\n\n#fox #nature\n#reels",
+        )
+        self.assertIn("A fox at dawn.", body)
+        self.assertNotIn("#fox", body)
+        self.assertNotIn("#reels", body)
+
+    def test_inline_hashtags_stay(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Fox",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="the #1 fox of the day",
+        )
+        self.assertIn("the #1 fox of the day", body)
+
+    def test_hashtag_only_description_stays(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="Fox",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="#fox #nature",
+        )
+        self.assertIn("#fox #nature", body)
+
+    def test_include_description_off(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="A reel",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            description="Filmed in Yellowstone.",
+            include_description=False,
+        )
+        self.assertEqual(body, "@clips: A reel · https://example.com/reel/abc")
+
+    def test_custom_caption_still_gets_description(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="A reel",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            custom="posted",
+            description="Filmed in Yellowstone.",
+        )
+        self.assertEqual(body, "posted\n\nFilmed in Yellowstone.")
+
+    def test_custom_caption_does_not_repeat_itself(self) -> None:
+        body = build_caption(
+            uploader="clips",
+            title="A reel",
+            source_url="https://example.com/reel/abc",
+            filename="abc.mp4",
+            custom="Filmed in Yellowstone.",
+            description="Filmed in Yellowstone.",
+        )
+        self.assertEqual(body, "Filmed in Yellowstone.")
+
+    def test_description_without_metadata_is_a_real_caption(self) -> None:
+        body = build_caption(
+            uploader=None,
+            title=None,
+            source_url="https://example.com/reel/abc",
+            filename="vid.mp4",
+            description="Look at this cat",
+        )
+        self.assertEqual(body, "https://example.com/reel/abc\n\nLook at this cat")
+
+    def test_caption_html_keeps_line_breaks_and_link(self) -> None:
+        plain = (
+            "@clips: Fox · https://example.com/reel/abc\n\nLook at this cat <3"
+        )
+        rendered = caption_html(plain, "https://example.com/reel/abc")
+        self.assertIsNotNone(rendered)
+        assert rendered is not None
+        self.assertIn("<br>\n", rendered)
+        self.assertIn("Look at this cat &lt;3", rendered)
+        self.assertIn('<a href="https://example.com/reel/abc">', rendered)
+        self.assertNotIn("\n\n", rendered)
+
+    def test_caption_html_one_line_unchanged_shape(self) -> None:
+        rendered = caption_html(
+            "@clips: Sunset · https://example.com/v",
+            "https://example.com/v",
+        )
+        self.assertIsNotNone(rendered)
+        assert rendered is not None
+        self.assertNotIn("<br>", rendered)
+        self.assertIn("<a href=", rendered)
 
 
 class TestMediaContent(unittest.TestCase):
