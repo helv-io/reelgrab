@@ -32,6 +32,8 @@ class TestBootstrap(unittest.TestCase):
             self.assertNotIn("instamatrix", text)
             self.assertIn('command_prefix: "!reel"', text)
             self.assertIn("amplify_video", text)
+            self.assertIn("include_description: true", text)
+            self.assertIn("max_description_length: 500", text)
 
     def test_first_run_creates_config_and_exits(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -82,6 +84,19 @@ class TestBootstrap(unittest.TestCase):
         self.assertIn("bsky", blob)
         self.assertIn("reddit", blob)
         self.assertIn("status", blob)
+
+    def test_description_keys_default_when_omitted(self) -> None:
+        cfg = parse_config_dict({"bot": {"auto_download": False}})
+        self.assertFalse(cfg.bot.auto_download)
+        self.assertTrue(cfg.bot.include_description)
+        self.assertEqual(cfg.bot.max_description_length, 500)
+
+    def test_description_keys_explicit(self) -> None:
+        cfg = parse_config_dict(
+            {"bot": {"include_description": False, "max_description_length": 120}}
+        )
+        self.assertFalse(cfg.bot.include_description)
+        self.assertEqual(cfg.bot.max_description_length, 120)
 
     def test_registration_regex(self) -> None:
         cfg = parse_config_dict(

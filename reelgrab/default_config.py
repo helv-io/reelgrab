@@ -80,6 +80,14 @@ bot:
     # ("@uploader: title · source url"), or the filename when metadata is missing.
     # Matrix requires a body. No "Downloading…" / success notices are sent.
     success_caption: ""
+    # Append the source post's description under the metadata line.
+    # mautrix-whatsapp copies the m.video body into the WhatsApp video caption,
+    # so the text shows under the video. false keeps the metadata line only.
+    include_description: true
+    # Cut the description at this many characters and add an ellipsis.
+    # 0 means no extra cut. The full caption is still kept within 1024
+    # characters, which is what WhatsApp accepts on a video.
+    max_description_length: 500
     # On failure, react with ❌ and post one short line. The traceback stays in the log.
     notify_on_failure: true
     # Max concurrent downloads.

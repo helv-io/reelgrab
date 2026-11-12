@@ -58,6 +58,7 @@ class MediaFile:
     uploader: str | None = None
     video_id: str | None = None
     blurhash: str | None = None
+    description: str | None = None
 
 
 @dataclass
@@ -709,6 +710,7 @@ def _finish_media(
     title: str | None = None,
     uploader: str | None = None,
     video_id: str | None = None,
+    description: str | None = None,
 ) -> MediaFile:
     """Convert, probe, and thumbnail a file already on disk."""
     size = path.stat().st_size
@@ -780,6 +782,7 @@ def _finish_media(
         uploader=uploader,
         video_id=video_id,
         blurhash=blur,
+        description=description,
     )
 
 
@@ -788,6 +791,17 @@ class SourceMeta:
     title: str | None = None
     uploader: str | None = None
     video_id: str | None = None
+    description: str | None = None
+
+
+def _description_text(value: Any) -> str | None:
+    """yt-dlp description, or None when it is missing, blank, or the string None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.casefold() in {"none", "null"}:
+        return None
+    return text
 
 
 def _meta_from_info(info: dict[str, Any]) -> SourceMeta:
@@ -798,6 +812,7 @@ def _meta_from_info(info: dict[str, Any]) -> SourceMeta:
         title=str(title).strip() if title else None,
         uploader=str(uploader).strip() if uploader else None,
         video_id=str(video_id).strip() if video_id else None,
+        description=_description_text(info.get("description")),
     )
 
 
@@ -911,6 +926,7 @@ async def download_url(url: str, cfg: DownloadConfig) -> MediaFile:
             title=meta.title,
             uploader=meta.uploader,
             video_id=meta.video_id,
+            description=meta.description,
         )
 
     try:

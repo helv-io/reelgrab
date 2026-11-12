@@ -285,6 +285,7 @@ def _caption_for(
     filename: str,
     uploader: str | None,
     title: str | None,
+    description: str | None = None,
 ) -> tuple[str, str | None]:
     custom = effective_caption(cfg, store, room_id)
     body = build_caption(
@@ -293,6 +294,9 @@ def _caption_for(
         source_url=url,
         filename=filename,
         custom=custom,
+        description=description,
+        include_description=cfg.bot.include_description,
+        max_description_length=cfg.bot.max_description_length,
     )
     html_body = caption_html(body, url) if body != filename else None
     return body, html_body
@@ -332,6 +336,7 @@ async def _send_cached(
         filename=filename,
         uploader=item.uploader,
         title=item.title,
+        description=item.description,
     )
     await bot.send_video(
         room_id,
@@ -524,6 +529,7 @@ async def _remember(
             filename=filename,
             uploader=media.uploader,
             title=media.title,
+            description=media.description,
             thumbnail_mxc=thumbnail_mxc,
             thumbnail_width=media.thumbnail_width,
             thumbnail_height=media.thumbnail_height,
@@ -604,6 +610,7 @@ async def _process_one(
             filename=filename,
             uploader=media.uploader,
             title=media.title,
+            description=media.description,
         )
         await bot.send_video(
             room_id,

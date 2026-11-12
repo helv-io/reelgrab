@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS media (
     thumbnail_height INTEGER,
     thumbnail_size INTEGER,
     blurhash TEXT,
+    description TEXT,
     created_at INTEGER NOT NULL
 )
 """
@@ -54,6 +55,7 @@ class CachedMedia:
     thumbnail_height: int | None
     thumbnail_size: int | None
     blurhash: str | None
+    description: str | None = None
 
 
 class MediaCache:
@@ -73,6 +75,9 @@ class MediaCache:
     def _ensure(self) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(_SCHEMA)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(media)")}
+            if "description" not in cols:
+                conn.execute("ALTER TABLE media ADD COLUMN description TEXT")
 
     def get(self, url: str) -> CachedMedia | None:
         key = canonicalize_url(url)
@@ -103,6 +108,7 @@ class MediaCache:
             thumbnail_height=row["thumbnail_height"],
             thumbnail_size=row["thumbnail_size"],
             blurhash=row["blurhash"],
+            description=row["description"] if "description" in row.keys() else None,
         )
 
     def put(self, url: str, item: CachedMedia) -> None:
@@ -114,8 +120,9 @@ class MediaCache:
                     INSERT INTO media (
                         url_key, source_url, mxc, mime, size, duration_ms, width, height,
                         filename, uploader, title, thumbnail_mxc, thumbnail_width,
-                        thumbnail_height, thumbnail_size, blurhash, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        thumbnail_height, thumbnail_size, blurhash, description,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(url_key) DO UPDATE SET
                         source_url = excluded.source_url,
                         mxc = excluded.mxc,
@@ -132,6 +139,7 @@ class MediaCache:
                         thumbnail_height = excluded.thumbnail_height,
                         thumbnail_size = excluded.thumbnail_size,
                         blurhash = excluded.blurhash,
+                        description = excluded.description,
                         created_at = excluded.created_at
                     """,
                     (
@@ -151,6 +159,7 @@ class MediaCache:
                         item.thumbnail_height,
                         item.thumbnail_size,
                         item.blurhash,
+                        item.description,
                         int(time.time()),
                     ),
                 )

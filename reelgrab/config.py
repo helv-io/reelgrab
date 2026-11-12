@@ -57,6 +57,12 @@ class BotConfig:
     # Empty = metadata caption (``@uploader: title · url``), or the filename
     # when the download has no title/uploader.
     success_caption: str = ""
+    # Append the source description under that line. The m.video body is what
+    # mautrix-whatsapp sends as the WhatsApp caption.
+    include_description: bool = True
+    # Cut the description here. 0 skips this cut. The assembled caption is
+    # still kept within 1024 characters so WhatsApp will accept it.
+    max_description_length: int = 500
     notify_on_failure: bool = True
     max_concurrent: int = 2
     dedupe_ttl_seconds: int = 3600
